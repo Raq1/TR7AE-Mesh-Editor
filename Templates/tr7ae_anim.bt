@@ -1,0 +1,373 @@
+LittleEndian();
+BitfieldDisablePadding();
+
+local uint64 i<hidden=true> = 0;
+local uint64 j<hidden=true> = 0;
+local uint SectionDataSize;
+
+
+#define ROT_USED 1
+#define SCALE_USED 1 << 1
+#define POS_USED 1 << 2
+
+
+typedef enum <ushort> {
+    XROT = 1,
+    YROT = 1 << 1,
+    ZROT = 1 << 2,
+    XSCALE = 1 << 3,
+    YSCALE = 1 << 4,
+    ZSCALE = 1 << 5,
+    XTRANS = 1 << 6,
+    YTRANS = 1 << 7,
+    ZTRANS = 1 << 8
+} TRACK_FLAGS;
+
+
+// TimeIndex_t
+    typedef struct {
+        ubyte time;
+        local short aggregateTime;
+    } TimeIndex_t<name=Str("Delta Time: %d ", this.time),
+                  read=Str("Aggregate Time: %d", this.aggregateTime)>;
+
+
+// TimeIndices
+    typedef struct(int keyFrameCount) 
+    {
+        local int timeIndexSum<hidden=true> = 0;
+        
+        for (j = 0; j < /* parentof(this). */trackHeader.keyFrameCount-1; j++)
+        {
+            TimeIndex_t timeIndexDelta;
+            timeIndexSum += timeIndexDelta.time;
+            timeIndexDelta.aggregateTime = timeIndexSum;
+        }
+    } TimeIndices<>;
+
+
+// G2AnimCompressionType
+    enum <short> G2AnimCompressionType
+    {
+        Raw = 0x0,
+        Constant = 0x1,
+        Linear = 0x2
+    };
+
+
+// TrackHeader
+	typedef struct {
+
+		G2AnimCompressionType mode;
+		ushort keyFrameCount;
+
+	} TrackHeader<>;
+
+
+// LinearKey
+    typedef struct(int keyTime) {
+        local int time<hidden=true> = keyTime;
+        local float absValue<hidden=true>;
+        float value;
+    } LinearKey<name=Str("Time: %d ", this.time),
+                read=Str("%.7f", this.absValue),
+                write=SScanf(value, "%f", this.absValue)>;
+
+
+// KeyFrameAnimation
+    typedef struct {
+
+        TrackHeader trackHeader;
+
+        switch (trackHeader.mode)
+        {
+        case Raw:
+            float key[animFragment.mKeyCount];
+            break;
+
+        case Constant:
+            float key;
+            break;
+            
+        case Linear:
+            local uint indsStart<hidden=true, format=hex> = FTell();
+            TimeIndices timeIndices(trackHeader.keyFrameCount)<>;
+
+            FSeek(indsStart + ( (trackHeader.keyFrameCount + 2) >> 2 ) * 4);
+            struct {
+                local float valueSum<hidden=true> = 0.;
+                LinearKey key(0);
+                valueSum += key.value;
+                key.absValue = valueSum;
+
+                for (i = 0; i < trackHeader.keyFrameCount-1; i++)
+                {
+                    LinearKey key(timeIndices.timeIndexDelta[i].aggregateTime);
+                    valueSum += key.value;
+                    key.absValue = valueSum;
+                }
+            
+            } Keys;
+
+            break;
+
+        default:
+            break;
+        }
+
+    } KeyFrameAnimation<read=Str("Key Count: %d | Type: %s", this.trackHeader.keyFrameCount,
+                                                             EnumToString(this.trackHeader.mode)),
+                        // name=Str( EnumToString(this.trackHeader.mode) ),
+                        optimize=false>;
+
+
+// Bone
+    typedef struct(uint16 inFlags, int boneIdx) {
+        local int index<hidden=true> = boneIdx;
+        local int flags<hidden=true> = inFlags;
+        local int trackCount<hidden=true> = 0;
+        
+        // Scale
+        if (flags & XSCALE)
+        {
+            KeyFrameAnimation scale_x<bgcolor=cGreen>;
+            trackCount++;
+        }
+        
+        if (flags & YSCALE)
+        {
+            KeyFrameAnimation scale_y<bgcolor=cGreen>;
+            trackCount++;
+        }
+        
+        if (flags & ZSCALE)
+        {
+            KeyFrameAnimation scale_z<bgcolor=cGreen>;
+            trackCount++;
+        }
+        
+        // Rotation
+        if (flags & XROT)
+        {
+            KeyFrameAnimation rot_x<bgcolor=cRed>;
+            trackCount++;
+        }
+        
+        if (flags & YROT)
+        {
+            KeyFrameAnimation rot_y<bgcolor=cRed>;
+            trackCount++;
+        }
+
+        if (flags & ZROT)
+        {
+            KeyFrameAnimation rot_z<bgcolor=cRed>;
+            trackCount++;
+        }
+
+        // Translation
+        if (flags & XTRANS)
+        {
+            KeyFrameAnimation pos_x<bgcolor=cBlue>;
+            trackCount++;
+        }
+        
+        if (flags & YTRANS)
+        {
+            KeyFrameAnimation pos_y<bgcolor=cBlue>;
+            trackCount++;
+        }
+
+        if (flags & ZTRANS)
+        {
+            KeyFrameAnimation pos_z<bgcolor=cBlue>;
+            trackCount++;
+        }
+        
+    } Bone<name=Str("Bone %d ", this.index), optimize=false,
+           read=Str("Tracks: %d", this.trackCount)>;
+
+
+// AnimFragment
+    typedef struct {
+
+        float mTransX;
+        float mTransY;
+        float mTransZ;
+        float mRotX;
+        float mRotY;
+        float mRotZ;
+        int16 mAnimID;
+        int16 mKeyCount;
+        int16 mTimePerKey;
+        char mSegmentCount;
+        char mSectionCount;
+        int mSectionDataOffset;
+        
+    } AnimFragment<read=Str("Pos [%.3f %.3f %.3f]", this.mTransX, 
+                                                    this.mTransY,
+                                                    this.mTransZ)>;
+
+
+// PackedData
+    typedef struct {
+        uint32 hasDebugInfo : 1;
+        uint32 resourceType : 7;
+        uint32 numRelocations : 24;        
+    } PackedData;
+
+
+
+    enum <byte> TYPE {
+        General = 0,
+        Empty = 1,
+        Animation = 2,
+        Pushbuffer_WC = 3,
+        Pushbuffer = 4,
+        Texture = 5,
+        Sound = 6,
+        DTPData = 7,
+        Script = 8,
+        ShaderLib = 9,
+        CollisionMesh = 10,
+        Num_Section_Types = 11
+    };
+
+// SectionData
+	typedef struct {
+
+		uint32 magic; // 0x0
+		int32 size; // 0x4
+		TYPE m_type;
+		byte _bf5; // 0x9
+		uint16 versionID; // 0xa
+		//uint32 packedData;
+		
+        PackedData packedData;
+
+		uint32 id;
+		uint32 specMask;
+
+		struct {
+
+			struct {
+				uint16 type : 3;
+				uint16 sectionIndexOrType : 13;
+			} typeAndSectionInfo;
+
+			int16 typeSpecific;
+			uint32 offset <fgcolor=cRed>;
+            
+		} Relocations[packedData.numRelocations];
+
+	} SectionData;
+
+
+
+int numberOfSetBits(uint32 i)
+{
+     i = i - ((i >> 1) & 0x55555555);        // add pairs of bits
+     i = (i & 0x33333333) + ((i >> 2) & 0x33333333);  // quads
+     i = (i + (i >> 4)) & 0x0F0F0F0F;        // groups of 8
+     i *= 0x01010101;                        // horizontal sum of bytes
+     return  i >> 24;               // return just that top byte (after truncating to 32-bit even when int is wider than uint32_t)
+}
+
+//=====================================================================
+//   START
+//=====================================================================
+if ( ReadShort( FTell() ) == 17747 ) 
+{
+    SectionData sectionData<fgcolor=cGreen, name="SectionData">;
+    AnimFragment animFragment<name="AnimFragment">;
+
+	local uint32 numRelocations = sectionData.packedData.numRelocations;
+	Printf("%d\n\n", numRelocations);
+	SectionDataSize = (numRelocations * 0x8) + 0x18;
+
+	// FSeek(SectionDataSize);
+// }
+
+struct {
+    local uint setBits<hidden=true> = 0;
+
+    ubyte transformFlags : 8<format=binary>; // tells whether rot/scale/pos tracks are used
+
+    local int bits<hidden=true> = 0;
+    local uint16 flags[animFragment.mSegmentCount]<format=binary>;
+
+
+    if (transformFlags & ROT_USED)
+    {
+        for (i = 0; i < animFragment.mSegmentCount; i++)
+        {
+            ubyte rotFlags : 3 <format=binary>;
+            flags[i] = flags[i] | rotFlags[i];
+            
+            setBits += numberOfSetBits(rotFlags[i]);
+        }
+        
+        BitfieldEnablePadding();
+    }
+
+    if (transformFlags & SCALE_USED)
+    {
+        ubyte scaleFlags : 3 <format=binary>;
+        BitfieldDisablePadding();
+        
+        for (i = 1; i < animFragment.mSegmentCount; i++)
+        {
+            ubyte scaleFlags : 3 <format=binary>;
+            flags[i] = flags[i] | (scaleFlags[i] << 3);
+            
+            setBits += numberOfSetBits(scaleFlags[i]);
+        }
+        
+        BitfieldEnablePadding();
+    }
+
+    if (transformFlags & POS_USED)
+    {
+        ubyte posFlags : 3 <format=binary>;
+        BitfieldDisablePadding();
+        
+        for (i = 1; i < animFragment.mSegmentCount; i++)
+        {
+            ubyte posFlags : 3 <format=binary>;
+            flags[i] = flags[i] | ( (ushort)posFlags[i] << 6);
+            Printf("%u\n", flags[i]);
+            
+            setBits += numberOfSetBits(posFlags[i]);
+        }
+    }
+
+} TrackFlags<read=Str("Bones: %d | Bits: %d", 
+                        animFragment.mSegmentCount,
+                        this.setBits)>;
+
+if (!TrackFlags.transformFlags)
+    return;
+
+
+FSeek(animFragment.mSectionDataOffset + SectionDataSize + 32);
+struct {
+    local int trackCount<hidden=true> = 0;
+    local int boneIdx<hidden=true> = 0;
+
+    for (boneIdx; boneIdx < animFragment.mSegmentCount; boneIdx++)
+    {
+        if (TrackFlags.flags[boneIdx])
+        {
+            Printf("Bone %d ", boneIdx);
+            Bone bone(TrackFlags.flags[boneIdx], boneIdx);
+            trackCount += bone.trackCount;
+        }
+    }
+} tracks<read=Str("Track count: %d", trackCount), 
+         name="Tracks">;
+
+// while ( !FEof() )
+//     KeyFrameAnimation track;
+
+
+}

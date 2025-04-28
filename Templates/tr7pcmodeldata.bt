@@ -1,0 +1,73 @@
+#include "tr7ae_section.bt"
+
+FSkip(16);
+
+typedef struct
+{
+    float m128F32[4];
+} __m128 <optimize=false>;
+
+typedef struct
+{
+    float x;
+    float y;
+    float z;
+    float w;
+} _91D1B2149FAC90180ECB9AC277F76009 <optimize=false>;
+
+typedef union
+{
+    __m128 vec128;
+    _91D1B2149FAC90180ECB9AC277F76009 _S1;
+} _0A73982710B57E0558133ED24FB5D472;
+
+typedef struct
+{
+    _0A73982710B57E0558133ED24FB5D472 __U0;
+} Vector <optimize=false>;
+
+typedef struct
+{
+    Vector _Parent;
+} Vector3 <optimize=false>;
+
+enum <int> PCModelData__Type
+{
+    kTypeRigid = 0,
+    kTypeSkinned = 1,
+    kTypeVmoAll = 2,
+    kTypeVmoXYZ = 3,
+    kTypeVmoRGBA = 4,
+    kTypeVmoUV = 5,
+    kTypeBend = 6,
+    kTypeDummy = 123456,
+    kTypeForceDWORD = 2147483647
+};
+
+typedef struct
+{
+    unsigned int magicNumber;
+    unsigned int flags;
+    unsigned int totalDataSize;
+    unsigned int numIndices;
+    Vector3 boundingSphereCenter;
+    Vector3 boxMin;
+    Vector3 boxMax;
+    float boundingSphereRadius;
+    PCModelData__Type modelType;
+    float sortBias;
+    unsigned int primGroupOffset;
+    unsigned int modelBatchOffset;
+    unsigned int boneOffset;
+    unsigned int materialOffset;
+    unsigned int indexOffset;
+    unsigned int stencilDataOffset;
+    ushort numPrimGroups;
+    ushort numModelBatches;
+    ushort numBones;
+    ushort numMaterials;
+    ushort numPixmaps;
+    ushort highestBendIndex;
+} PCModelData <optimize=false>;
+
+PCModelData root <open=true>;

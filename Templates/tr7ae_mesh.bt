@@ -1,0 +1,318 @@
+#include "tr7ae_section.bt"
+
+typedef enum <ubyte> {
+  kTypeRigid = 0,
+  kTypeSkinned = 1,
+  kTypeVmoAll = 2,
+  kTypeVmoXYZ = 3,
+  kTypeVmoRGBA = 4,
+  kTypeVmoUV = 5,
+  kTypeBend = 6,
+  kTypeDummy = 0x1E240,
+  kTypeForceDWORD = 0x7FFFFFFF,
+} RenderModelDataFlag;
+
+typedef struct
+{
+	float x;
+	float y;
+	float z;
+	float w;
+} Vector <read=Str("%f, %f, %f", x, y, z)>;
+
+local uint64 i<hidden=true>;
+
+struct {
+	int version;
+	int numSegments;
+	int numVirtSegments;
+	uint segmentList;
+	local int offsetsegmentlist = FTell();
+	if (numSegments > 0) {
+		FSeek(segmentList + SectionInfoSize);
+		for (i=0; i<numSegments; i++);
+			struct {
+				Vector min;
+				Vector max;
+				Vector pivot;
+				int flags;
+				int16 firstVertex;
+				int16 lastVertex;
+				int parent;
+				uint hInfo;
+                local int offsethinfo = FTell();
+				if (hInfo > 0) {
+					FSeek(hInfo + SectionInfoSize);
+					struct {
+						int numHSpheres;
+						uint32 hsphereList;
+                        local int offsethspherelist = FTell();
+						if (numHSpheres > 0) {
+							FSeek(hsphereList + SectionInfoSize);
+							struct {
+    							int16 flags;
+    							char id;
+    							char rank;
+    							uint16 radius;
+    							int16 x;
+    							int16 y;
+    							int16 z;
+    							uint radiusSquared;
+    							uint16 mass;
+    							char buoyancyFactor;
+    							char explosionFactor;
+    							char iHitMaterialType;
+    							char pad;
+    							int16 damage;
+							} HSphere[numHSpheres]<optimize=true>;
+                        }
+                        FSeek(offsethspherelist);
+						int numHBoxes;
+						uint32 hboxList;
+                        local int offsethboxlist = FTell();
+						if (numHBoxes > 0) {
+							FSeek(hboxList + SectionInfoSize);
+							struct {
+								float widthx;
+								float widthy;
+								float widthz;
+								float widthw;
+								float posx;
+								float posy;
+								float posz;
+								float posw;
+								struct {
+									float X;
+									float Y;
+									float Z;
+									float W;
+								} quat;
+								int16 flags;
+								char id;
+								char rank;
+								uint16 mass;
+								char buoyancyFactor;
+								char explosionFactor;
+								char iHitMaterialType;
+								char pad;
+								int16 damage;
+							} Hbox[numHBoxes]<optimize=true>;
+						}
+                        FSeek(offsethboxlist);
+						int numHMarkers;
+						uint32 hmarkerList;
+                        local int offsethmarkerlist = FTell();
+                        if (numHMarkers > 0) {
+							FSeek(hmarkerList + SectionInfoSize);
+							struct {
+    							int bone;
+    							int index;
+    							float px;
+    							float py;
+    							float pz;
+    							float rx;
+    							float ry;
+    							float rz;
+							} HMarker[numHMarkers]<read=Str("bone %u, index %u, %f, %f, %f", bone, index, px, py, pz),optimize=true>;
+                        }
+                        FSeek(offsethmarkerlist);
+						int numHCapsules;
+						uint32 hcapsuleList;
+                        local int offsethcapsulelist = FTell();
+                        if (numHCapsules > 0) {
+							FSeek(hcapsuleList + SectionInfoSize);
+							struct {
+								float posx;
+								float posy;
+								float posz;
+								float posw;
+								struct {
+									float X;
+									float Y;
+									float Z;
+									float W;
+								} quat;
+    							int16 flags;
+    							char id;
+    							char rank;
+    							uint16 radius;
+    							uint16 length;
+    							uint16 mass;
+    							char buoyancyFactor;
+    							char explosionFactor;
+    							char iHitMaterialType;
+    							char pad;
+    							int16 damage;
+ 							} HCapsule[numHCapsules];
+                        }
+                        FSeek(offsethcapsulelist);
+					} HInfo;
+                FSeek(offsethinfo);
+				}
+			} Segment[numSegments]<read=Str("%f, %f, %f, %u", pivot.x, pivot.y, pivot.z, hInfo), optimize=false>;
+		}
+		if (numVirtSegments > 0) {
+			struct {
+				Vector min;
+				Vector max;
+				Vector pivot;
+				int flags;
+				int16 firstVertex;
+				int16 lastVertex;
+				int16 index;
+				int16 weightIndex;
+				float weight;
+			} VirtSegment[numVirtSegments]<read=Str("%f, %f, %f", pivot.x, pivot.y, pivot.z)>;
+		}
+	FSeek(offsetsegmentlist);
+	struct {
+		float x;
+		float y;
+		float z;
+		float w;
+	} modelScale;
+	int numVertices;
+	uint vertexList;
+	local int offsetvertexlist = FTell();
+	if (numVertices > 0) {
+		FSeek(vertexList + SectionInfoSize);
+		struct {
+			struct {
+				int16 x;
+				int16 y;
+				int16 z;
+			}vertex<read=Str("%i, %i, %i", x, y, z)>;
+			char nx;
+			char ny;
+			char nz;
+			char pad;
+			int16 segment;
+			int uv;
+		} MVertex[numVertices]<read=Str("pos %i, %i, %i, segment %i", vertex.x, vertex.y, vertex.z, segment)>;
+	}
+	FSeek(offsetvertexlist);
+	int numNormals;
+	uint normalList;
+	int numFaces;
+	uint faceList;
+	local int offsetfacelist = FTell();
+	if (faceList > 0) {
+		FSeek(faceList + SectionInfoSize);
+        struct
+        {
+            struct
+            {
+              uint16 v0;
+              uint16 v1;
+              uint16 v2;
+            } Face;
+                union
+                {
+                    struct
+                    {
+                        ushort numVertices0 : 5;
+                        ushort numVertices1 : 5;
+                        ushort numVertices2 : 5;
+                        ushort something : 1;
+                    } SameVertBits;   
+                    uint16 sameVertBits;
+                } sameVertBitsUnion;
+        }  MFace[numFaces]<read=Str("%i %i %i %i", sameVertBitsUnion.SameVertBits.numVertices0, sameVertBitsUnion.SameVertBits.numVertices1, sameVertBitsUnion.SameVertBits.numVertices2, sameVertBitsUnion.SameVertBits.something)>;
+	}
+	FSeek(offsetfacelist);
+	uint OBSOLETEaniTextures;
+	float maxRad;
+	float maxRadSq;
+	uint OBSOLETEstartTextures;
+	uint OBSOLETEendTextures;
+	uint animatedListInfo;
+	uint animatedInfo;
+	uint scrollInfo;
+	uint textureStripInfo;
+    local int offsettexturestripinfo = FTell();
+    if (textureStripInfo > 0) {
+		FSeek(textureStripInfo + SectionInfoSize);
+		if ( ReadShort( FTell() ) != 0 ) {
+		struct {
+			while (true) {
+				struct {
+					int16 vertexCount;
+					int16 drawGroup;
+					union {
+						struct {
+                            uint texture: 13;
+                            uint blendValue: 4;
+                            uint unk1: 3;
+                            uint unk2: 1;
+                            uint singleSided: 1;
+                            uint textureWrap: 2;
+                            uint unk3: 1;
+                            uint unk4: 1;
+                            uint iluminateOrFadeThingMaybe: 1;
+                            uint sortZThing: 1;
+                            uint stencilPass: 2;
+                            uint stencilFunc: 1;
+                            uint alphaRef: 1;
+						} flags;
+					int tpageid;
+					} tpageid;
+					float sortPush;
+					float scrollOffset;
+					uint nextTexture;
+					ushort StripIndexInfo[vertexCount];
+				if ( ReadShort( FTell() ) == -1 ) 
+					FSkip(2);
+				FSeek(nextTexture + SectionInfoSize);
+				} Mesh<read=Str("vertexCount %i, nTexture %i, dGroup %u", vertexCount, nextTexture, drawGroup)>;
+				if ( ReadShort( FTell() ) == 0 ) 
+					break;
+			    }
+		    } TextureStripInfo;
+        }
+    }
+	FSeek(offsettexturestripinfo);
+	uint envMappedVertices;
+	uint eyeRefEnvMappedVertices;
+	uint materialVertexColors;
+	uint spectralVertexColors;
+	int16 pnShadowFaces;
+	FSkip(2);
+	int16 pnShadowEdges;
+	FSkip(2);
+	uint boneMirrorData;
+	local int offsetbonemirrordata = FTell();
+	if (boneMirrorData > 0) {
+		FSeek(boneMirrorData + SectionInfoSize);
+		struct {
+            while (true) {
+				struct {
+			        ubyte bone1;
+			        ubyte bone2;
+			        ubyte count;
+                } BoneMirrorData;
+                    if ( ReadShort( FTell() ) == 0 ) 
+					    break;
+		    }
+	    } BoneMirrorData;
+    }
+	FSeek(offsetbonemirrordata);
+	uint drawgroupCenterList;
+	local int offsetdrawgroupcenterlist = FTell();
+	if (drawgroupCenterList > 0) {
+		FSeek(drawgroupCenterList + SectionInfoSize);
+		struct {
+			int16 x;
+			int16 y;
+			int16 z;
+			int16 pad;
+		} DrawgroupCenterList;
+	}
+	FSeek(offsetdrawgroupcenterlist);
+	int numMarkUps;
+	uint markUpList;
+	int numTargets;
+	uint targetList;
+	uint cdcRenderDataID;
+	uint cdcRenderModelData;
+	FSkip(12);
+} Model;

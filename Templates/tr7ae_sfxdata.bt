@@ -1,0 +1,206 @@
+typedef byte TYPE <read=TYPEread, write=TYPEwrite>;
+    string TYPEread(TYPE type) {
+        switch (type) {
+            case 0: 
+                return "General";
+            case 1: 
+                return "Empty";
+            case 2: 
+                return "Animation";
+            case 3: 
+                return "Pushbuffer_WC";
+            case 4: 
+                return "Pushbuffer";
+            case 5: 
+                return "Texture";
+            case 6: 
+                return "Sound";
+            case 7: 
+                return "DTPData";
+            case 8: 
+                return "Script";
+            case 9: 
+                return "ShaderLib";
+            case 10: 
+                return "CollisionMesh";
+            case 11:
+                return "Num_Section_Types";
+            default: 
+                return "Unknown";  
+        }
+    }
+    void TYPEwrite (TYPE &t, string str) {
+        t = Atoi(str);
+    }
+
+typedef enum <ubyte> {
+  kTypeRigid = 0,
+  kTypeSkinned = 1,
+  kTypeVmoAll = 2,
+  kTypeVmoXYZ = 3,
+  kTypeVmoRGBA = 4,
+  kTypeVmoUV = 5,
+  kTypeBend = 6,
+  kTypeDummy = 0x1E240,
+  kTypeForceDWORD = 0x7FFFFFFF,
+} RenderModelDataFlag;
+
+typedef enum <ushort> {
+  Double_Sided = 0,
+  Single_Sided = 32,
+  See_Through_UNCERTAIN = 2086,
+  See_Through_UNCERTAIN2 = 42,
+  See_Through_UNCERTAIN3 = 38,
+  Transparent_Single_Sided = 2087,
+  Invisible = 65535,
+} Material_Property;
+
+typedef enum <ubyte> {
+  Off = 0,
+  On = 32,
+  Dark_Thing = 60,
+} Alpha;
+
+local uint64 i<hidden=true>;
+local uint64 v<hidden=true>;
+local uint SectionDataSize;
+local uint segmentList<hidden=true>;
+local uint null<hidden=true>;
+
+null = 235995135;
+
+if ( ReadShort( FTell() ) == 17747 ) {
+struct {
+    uint32 magic; // 0x0
+    int32 size; // 0x4
+	        TYPE m_type;
+    byte _bf5; // 0x9
+    uint16 versionID; // 0xa
+    //uint32 packedData;
+    struct {
+        uint32 hasDebugInfo : 1;
+        uint32 resourceType : 7;
+        uint32 numRelocations : 24;        
+    } packedData;
+    uint32 id;
+    uint32 specMask;
+
+struct {
+    struct {
+        uint16 type : 3;
+        uint16 sectionIndexOrType : 13;
+    } typeAndSectionInfo;
+    int16 typeSpecific;
+    uint32 offset <fgcolor=cRed>;
+} Relocations[packedData.numRelocations];
+
+} SectionData <fgcolor=cGreen>;
+
+local uint32 numRelocations = SectionData.packedData.numRelocations;
+Printf("%d\n", numRelocations);
+	SectionDataSize = (numRelocations * 0x8) + 0x18;
+
+
+
+FSeek(SectionDataSize);
+}
+
+
+struct {
+
+  uint numPeriodic;
+  uint periodicList;
+  uint numEvent;
+  uint eventList;
+  uint numOneShot;
+  uint oneShotList;
+  uint numStream;
+  uint streamList;
+  uint numPadShockEvent;
+  uint padshockList;
+
+  if (numPeriodic > 0) {
+
+  FSeek(periodicList + SectionDataSize);
+
+  uint periodicListA[numPeriodic]<hidden=true>;
+
+struct {
+    for (i=0; i<numPeriodic; i++) {
+        FSeek(periodicListA[i] + SectionDataSize);
+        struct {
+            ubyte numSfxIDs;
+            ubyte flags;
+            ushort minVolDistance;
+            float pitch;
+            float pitchVariation;
+            ubyte maxVolume;
+            ubyte maxVolVariation;
+            ushort initialDelay;
+            ushort initialDelayVariation;
+            ushort onTime;
+            ushort onTimeVariation;
+            ushort offTime;
+            ushort offTimeVariation;
+        } ObjectPeriodicSound;
+    }
+}ObjectPeriodicSound;
+
+  }
+
+  if (numEvent > 0) {
+
+  FSeek(eventList + SectionDataSize);
+
+  uint eventListA[numEvent]<hidden=true>;
+
+struct {
+    for (i=0; i<numEvent; i++) {
+        FSeek(eventListA[i] + SectionDataSize);
+        struct {
+            ubyte soundGroup;
+            ubyte numSfxIDs;
+            ushort minVolDistance;
+            float pitch;
+            float pitchVariation;
+            ubyte maxVolume;
+            ubyte maxVolVariation;
+        } ObjectEventSound;
+  }
+}ObjectEventSound;
+
+  }
+
+  struct
+  {
+    ubyte soundGroup;
+    ubyte numSfxIDs;
+    ushort minVolDistance;
+    float pitch;
+    float pitchVariation;
+    ubyte maxVolume;
+    ubyte maxVolVariation;
+  } ObjectOneShotSound[numOneShot];
+
+struct {
+
+  short chooseChance;
+  short playChance;
+  short minVolumeDist;
+  short maxVolume;
+  ubyte musicVars[4];
+  char name[64];
+} ObjectStreamSound[numStream];
+
+struct {
+
+  float pitch;
+  float pitchVariation;
+  ushort minVolDistance;
+  ubyte maxVolume;
+  ubyte maxVolVariation;
+  char name[64];
+
+} ObjectEventPadshock[numPadShockEvent];
+
+} SFXData;
