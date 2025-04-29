@@ -35,3 +35,5 @@ What's coming:
 - Add import/export for multiple HSpheres/HBoxes/HCapsules per bone rather than just one
 - Fix HInfo and HSpheres not syncing when transforming when creating a new scene
 - Texture conversion to .pcd via drag-and-drop on Blender viewport
+
+For help and support, join the Tomb Raider Modding Discord: https://discord.gg/euRUvFkpjb
