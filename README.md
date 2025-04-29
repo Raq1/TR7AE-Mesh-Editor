@@ -34,3 +34,4 @@ What's coming:
 - Write Markups
 - Add import/export for multiple HSpheres/HBoxes/HCapsules per bone rather than just one
 - Fix HInfo and HSpheres not syncing when transforming when creating a new scene
+- Texture conversion to .pcd via drag-and-drop on Blender viewport
