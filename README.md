@@ -29,7 +29,7 @@ The addon also allows to snap an Armature's first bone's position and rotation d
 
 What's coming:
 
-- Write vertices from face corners instead of actual vertex data
+- Write vertices from face corners instead of actual vertex data. This will fix issues such as UV bleeding when exporting a model with removed double vertices
 - Remove HInfo data from pose bones to write the data exclusively from meshes. This will give the possibility to remove/add HInfo
 - Write Markups
 - Add import/export for multiple HSpheres/HBoxes/HCapsules per bone rather than just one
