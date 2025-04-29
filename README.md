@@ -15,4 +15,5 @@ Features include:
 
 (Example of vertex colors import and export)
 ![image](https://github.com/user-attachments/assets/d091a715-27c8-499d-a7cd-52276eb7cd7a)
-![image](https://github.com/user-attachments/assets/2a3c1a98-bcfe-4d25-b231-c2e8bdd24c27)
+![image](https://github.com/user-attachments/assets/962cdcf0-aed4-40ee-8735-fb1383037244)
+
