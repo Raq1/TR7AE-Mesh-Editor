@@ -13,5 +13,6 @@ Features include:
 - Environment Mapping import/export, to create meshes with reflection
 - Filesize of exported models is now significantly reduced thanks to a more optimized way of storing weights
 
-(Example of vertex colors)
+(Example of vertex colors import and export)
 ![image](https://github.com/user-attachments/assets/d091a715-27c8-499d-a7cd-52276eb7cd7a)
+![image](https://github.com/user-attachments/assets/2a3c1a98-bcfe-4d25-b231-c2e8bdd24c27)
