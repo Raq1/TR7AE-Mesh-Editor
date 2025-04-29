@@ -1,0 +1,24 @@
+#include "tr7ae_section.bt"
+
+typedef struct
+{
+  uint16 info;
+  int16 keyframeID;
+  uint8 fxID;
+  uint8 pad[3];
+} AnimFxHeader;
+
+typedef struct
+{
+  uint8 effectNumber;
+  uint8 modifierList[3];
+} ObjectEffectData;
+
+
+struct ObjectEffectFXA
+{
+  AnimFxHeader effectHeader;
+  ObjectEffectData effectData;
+};
+
+ObjectEffectFXA Header;

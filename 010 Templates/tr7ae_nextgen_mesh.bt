@@ -1,0 +1,333 @@
+typedef byte TYPE <read=TYPEread, write=TYPEwrite>;
+    string TYPEread(TYPE type) {
+        switch (type) {
+            case 0: 
+                return "General";
+            case 1: 
+                return "Empty";
+            case 2: 
+                return "Animation";
+            case 3: 
+                return "Pushbuffer_WC";
+            case 4: 
+                return "Pushbuffer";
+            case 5: 
+                return "Texture";
+            case 6: 
+                return "Sound";
+            case 7: 
+                return "DTPData";
+            case 8: 
+                return "Script";
+            case 9: 
+                return "ShaderLib";
+            case 10: 
+                return "CollisionMesh";
+            case 11:
+                return "Num_Section_Types";
+            default: 
+                return "Unknown";  
+        }
+    }
+    void TYPEwrite (TYPE &t, string str) {
+        t = Atoi(str);
+    }
+
+typedef enum <uint> {
+  kTypeRigid = 0x0,
+  kTypeSkinned = 0x1,
+  kTypeVmoAll = 0x2,
+  kTypeVmoXYZ = 0x3,
+  kTypeVmoRGBA = 0x4,
+  kTypeVmoUV = 0x5,
+  kTypeBend = 0x6,
+  kTypeDummy = 0x1E240,
+  kTypeForceDWORD = 0x7FFFFFFF,
+} RenderModelDataFlag;
+
+typedef enum <int32> {
+
+  kPCBlendModeOpaque = 0x0,
+  kPCBlendModeAlphaTest = 0x1,
+  kPCBlendModeAlphaBlend = 0x2,
+  kPCBlendModeAdditive = 0x3,
+  kPCBlendModeSubtract = 0x4,
+  kPCBlendModeDestAlpha = 0x5,
+  kPCBlendModeDestAdd = 0x6,
+  kPCBlendModeModulate = 0x7,
+  kPCBlendModeBlend5050 = 0x8,
+  kPCBlendModeDestAlphaSrcOnly = 0x9,
+  kPCBlendModeColorModulate = 0xA,
+  kPCBlendModeMultipassAlpha = 0xD,
+  kPCBlendModeLightPassAdditive = 0x14,
+} BlendMode;
+
+typedef enum <int32> {
+
+  PC_CT_DEFAULT = 0x0,
+  PC_CT_LIGHTMAP = 0x1,
+  PC_CT_REFLECTION = 0x2,
+  PC_CT_MASKEDREFLECTION = 0x3,
+  PC_CT_STENCILREFLECTION = 0x4,
+  PC_CT_DIFFUSE = 0x5,
+  PC_CT_MASKEDDIFFUSE = 0x6,
+  PC_CT_IMMEDIATEDRAW = 0x7,
+  PC_CT_IMMEDIATEDRAW_PREDATOR = 0x8,
+  PC_CT_DEPTHOFFIELD = 0x9,
+  PC_CT_COUNT = 0xA,
+} ContainerType;
+
+typedef enum <int32> {
+
+  kTCSTexCoord0 = 0x0,
+  kTCSTexCoord1 = 0x1,
+  kTCSTexCoord2 = 0x2,
+  kTCSTexCoord3 = 0x3,
+  kTCSCameraSpacePosition = 0x4,
+  kTCSCameraSpaceNormal = 0x5,
+  kTCSCameraSpaceReflectionVector = 0x6,
+  kTCSWorldSpacePosition = 0x7,
+  kTCSWorldSpaceNormal = 0x8,
+  kTCSWorldSpaceReflectionVector = 0x9,
+}TexCoordSource;
+
+typedef enum <int32> {
+
+  kTCMNone = 0x0,
+  kTCMScroll = 0x1,
+  kTCMAutoScroll = 0x2,
+}TexCoordModifier;
+
+typedef enum <int32> {
+
+  kMPIConstant = 0x0,
+  kMPIParam0 = 0x1,
+  kMPIParam1 = 0x2,
+  kMPIParam2 = 0x3,
+  kMPIParam3 = 0x4,
+  kMPIParam4 = 0x5,
+  kMPIParam5 = 0x6,
+  kMPIParam6 = 0x7,
+  kMPIParam7 = 0x8,
+}ModifierParamId;
+
+local uint64 i<hidden=true>;
+local uint64 v<hidden=true>;
+local uint SectionDataSize;
+local uint segmentList<hidden=true>;
+local uint null<hidden=true>;
+
+null = 235995135;
+
+if ( ReadShort( FTell() ) == 17747 ) {
+struct {
+    uint32 magic; // 0x0
+    int32 size; // 0x4
+	        TYPE m_type;
+    byte _bf5; // 0x9
+    uint16 versionID; // 0xa
+    //uint32 packedData;
+    struct {
+        uint32 hasDebugInfo : 1;
+        uint32 resourceType : 7;
+        uint32 numRelocations : 24;        
+    } packedData;
+    uint32 id;
+    uint32 specMask;
+
+struct {
+    struct {
+        uint16 type : 3;
+        uint16 sectionIndexOrType : 13;
+    } typeAndSectionInfo;
+    int16 typeSpecific;
+    uint32 offset <fgcolor=cRed>;
+} Relocations[packedData.numRelocations];
+
+} SectionData <fgcolor=cGreen>;
+
+local uint32 numRelocations = SectionData.packedData.numRelocations;
+	SectionDataSize = (numRelocations * 0x8) + 0x18 + 16;
+
+
+
+FSeek(SectionDataSize);
+}
+
+struct {
+  uint magicNumber;
+  uint flags;
+  uint totalDataSize;
+  uint numIndices;
+  struct {
+    float x;
+    float y;
+    float z;
+    float w;
+  } boundingSphereCenter;
+  struct {
+    float x;
+    float y;
+    float z;
+    float w;
+  } boxMin;
+  struct {
+    float x;
+    float y;
+    float z;
+    float w;
+  } boxMax;
+  float boundingSphereRadius;
+  RenderModelDataFlag ModelDataFlag <name="cdcRenderModelData">;
+  float sortBias;
+  uint primGroupOffset;
+  uint modelBatchOffset;
+  uint boneOffset;
+  uint materialOffset;
+  uint indexOffset;
+  uint stencilDataOffset;
+  uint16 numPrimGroups;
+  uint16 numModelBatches;
+  uint16 numBones;
+  uint16 numMaterials;
+  uint16 numPixmaps;
+  uint16 highestBendIndex;
+} PCModelData;
+
+FSeek(PCModelData.primGroupOffset + SectionDataSize);
+
+struct {
+  uint baseIndex;
+  uint numPrimitives;
+  uint numVertices;
+  uint16 vertexShaderFlags;
+  FSkip(2);
+  uint materialIndex;
+} PCPrimGroup[PCModelData.numPrimGroups];
+
+FSeek(PCModelData.modelBatchOffset + SectionDataSize);
+
+struct {
+
+  uint flags;
+  uint numPrimGroups;
+  uint16 skinMapSize;
+  FSkip(2);
+  union {
+    uint pSkinMap;
+    uint skinMapOffset;
+  } _u3;
+  union {
+    uint pVertexData;
+    uint vertexDataOffset;
+  } _u4;
+  int pVertexBuffer;
+
+struct {
+
+  uint16 Stream;
+  uint16 Offset;
+  uint32 Type : 8;
+  uint32 Method : 8;
+  uint32 Usage : 8;
+  uint32 UsageIndex : 8;
+
+} vertexElements[16];
+  uint vertexFormat;
+  uint vertexStride;
+  uint numVertices;
+  uint baseIndex;
+  uint numPrimitives;
+} PCModelBatch[PCModelData.numModelBatches];
+
+FSeek(PCModelData.boneOffset + SectionDataSize);
+
+struct {
+  uint Bone;
+} Skeleton[PCModelData.numBones];
+
+FSeek(PCModelData.materialOffset + SectionDataSize);
+
+struct {
+  int id;
+  FSkip(4);
+struct {
+  uint64 m_hi;
+  uint16 m_lo;
+  FSkip(6);
+} PCAssetId;
+
+  BlendMode BlondMode <name="BlendMode">;
+  ContainerType ConaainerType <name="containerType">;
+  uint flags;
+  float opacity;
+  uint polyFlags;
+  uint16 uvAutoScrollSpeed;
+  FSkip(2);
+  float sortBias;
+  float detailRangeMul;
+  float detailScale;
+  float parallaxScale;
+  float parallaxOffset;
+  float specularPower;
+  float specularShift0;
+  float specularShift1;
+
+struct {
+
+  float r;
+  float g;
+  float b;
+  float a;
+
+} rimLightColor;
+
+  float rimLightIntensity;
+  float waterBlendBias;
+  float waterBlendExponent;
+struct {
+
+  float r;
+  float g;
+  float b;
+  float a;
+
+} waterDeepColor;
+
+  uint16 localNumPixmaps : 8;
+  FSkip(2);
+struct {
+
+  uint color;
+  TexCoordSource TexCoardSource <name="TexCoordSource">;
+  TexCoordModifier TexCoaadSource <name="TexCoordModifier">;
+  ModifierParamId ModafierParamId <name="ModifierParamId">;
+struct {
+
+  float x;
+  float y;
+  float z;
+  float w;
+
+} constant;
+  uint16 textureIndex;
+  uint16 numTextures: 8;
+} Layers[8];
+  uint _u23;
+  uint _u24;
+  uint _u25;
+  uint _u26;
+  uint _u27;
+  uint _u28;
+  uint _u29;
+  uint _u30;
+  uint fxMaterialDataOffset;
+  FSkip(4);
+
+} PCMaterialData[PCModelData.numMaterials];
+
+FSeek(PCModelData.indexOffset + SectionDataSize);
+
+struct {
+  ushort Faces[PCModelData.numIndices];
+} Faces;
