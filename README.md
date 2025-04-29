@@ -25,7 +25,7 @@ The addon also allows to snap an Armature's first bone's position and rotation d
 ![image](https://github.com/user-attachments/assets/219cbc91-38e2-4a32-9ba1-d064bb372866)
 ![image](https://github.com/user-attachments/assets/16e04bb3-9fc0-4d95-8b37-37c2e3eebc45)
 
-
+The addon is currently capable of importing cloth physics data, however nothing is done with that during export. Cloth physics data still has to be properly implemented into the addon. In the future, it will be possible to export cloth data and create new physics bones.
 
 What's coming:
 
