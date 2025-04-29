@@ -36,8 +36,6 @@ The addon is currently capable of importing cloth physics data, however nothing 
 - Fix HInfo and HSpheres not syncing when transforming when creating a new scene
 - Texture conversion to .pcd via drag-and-drop on Blender viewport
 
-For help and support, join the Tomb Raider Modding Discord: https://discord.gg/euRUvFkpjb
-
 ## Known limits/issues
 
 - The limit of vertex count for one entire model is 21,845
@@ -51,3 +49,6 @@ For help and support, join the Tomb Raider Modding Discord: https://discord.gg/e
 * [arcusmaximus](https://github.com/arcusmaximus) for general help and suggestions
 * [Joschka](https://forum.xentax.com/memberlist.php?mode=viewprofile&u=82197) for originally helping with the Noesis plugin, of which much logic has been transferred to the Blender addon
 * [HenrysArts](https://x.com/HenrysArts) for helpful testing, debugging, suggestions and inputs
+
+
+### For help and support, join the Tomb Raider Modding Discord: https://discord.gg/euRUvFkpjb
