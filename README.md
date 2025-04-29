@@ -5,7 +5,7 @@ Blender addon for import/export of Tomb Raider Legend/Anniversary models
 
 In comparision to the Noesis plugin I previously made 3 years ago, this Blender addon is full of brand new features, available thanks to a deeper understanding of the format and thanks to Blender's API which allows to import much more metadata than Noesis allows.
 
-Features include:
+### Features include:
 
 - HInfo import/export such as HBox, HSphere, HMarkers and HCapsules
 - HInfo live editing such as position, rotation and scale (where applicable) and export
@@ -27,7 +27,7 @@ The addon also allows to snap an Armature's first bone's position and rotation d
 
 The addon is currently capable of importing cloth physics data, however nothing is done with that during export. Cloth physics data still has to be properly implemented into the addon. In the future, it will be possible to export cloth data and create new physics bones.
 
-What's coming:
+## What's coming:
 
 - Write vertices from face corners instead of actual vertex data. This will fix issues such as UV bleeding when exporting a model with removed double vertices
 - Remove HInfo data from pose bones to write the data exclusively from meshes. This will give the possibility to remove/add HInfo
@@ -38,8 +38,10 @@ What's coming:
 
 For help and support, join the Tomb Raider Modding Discord: https://discord.gg/euRUvFkpjb
 
-Known limits/issues:
+## Known limits/issues:
 
 - The limit of vertex count for one entire model is 21,845
 - Addon currently only supports 1 HSphere/HBox/HCapsule. HMarkers are the only HInfo component that can have multiple entries. This will be fixed in the future.
 - Exporting the main model of lara_natla.drm from Anniversary causes the game to crash if the "Unknown 2" flag of the fire effect mesh is left unchanged. This means, however, that the fire effect won't be there anymore. There's currently no knowledge as to why this happens exactly.
+
+  
