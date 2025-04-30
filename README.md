@@ -32,6 +32,7 @@ The addon is currently capable of importing cloth physics data, however nothing 
 - Write vertices from face corners instead of actual vertex data. This will fix issues such as UV bleeding when exporting a model with removed double vertices
 - Remove HInfo data from pose bones to write the data exclusively from meshes. This will give the possibility to remove/add HInfo
 - Write Markups
+- Cloth export
 - Add import/export for multiple HSpheres/HBoxes/HCapsules per bone rather than just one
 - Fix HInfo and HSpheres not syncing when transforming when creating a new scene
 - Texture conversion to .pcd via drag-and-drop on Blender viewport
