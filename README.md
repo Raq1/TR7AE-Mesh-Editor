@@ -33,15 +33,11 @@ The addon is currently capable of importing cloth physics data, however nothing 
 - Remove HInfo data from pose bones to write the data exclusively from meshes. This will give the possibility to remove/add HInfo
 - Write Markups
 - Cloth export
-- Add import/export for multiple HSpheres/HBoxes/HCapsules per bone rather than just one
-- Fix HInfo and HSpheres not syncing when transforming when creating a new scene
 - Texture conversion to .pcd via drag-and-drop on Blender viewport
 
 ## Known limits/issues
 
 - The limit of vertex count for one entire model is 21,845
-- Addon currently only supports 1 HSphere/HBox/HCapsule. HMarkers are the only HInfo component that can have multiple entries. This will be fixed in the future.
-- Exporting the main model of lara_natla.drm from Anniversary causes the game to crash if the "Unknown 2" flag of the fire effect mesh is left unchanged. This means, however, that the fire effect won't be there anymore. There's currently no knowledge as to why this happens exactly.
 
 ## Credits
 
