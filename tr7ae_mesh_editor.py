@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tomb Raider 7/AE Mesh Editor",
     "author": "Raq",
     "collaborators": "Che, TheIndra, arcusmaximus (arc), DKDave, Joschka, Henry",
-    "version": (1, 0, 7),
+    "version": (1, 1, 0),
     "blender": (4, 2, 3),
     "location": "View3D > Sidebar > TR7AE Tools",
     "description": "Import and export Tomb Raider Legend/Anniversary mesh files.",
@@ -21,6 +21,7 @@ from typing import List
 from bpy.types import Operator, Panel
 from bpy.props import StringProperty
 from mathutils import Matrix
+from bpy.app.handlers import persistent
 
 def find_closest_group_id(color):
     """
@@ -117,23 +118,28 @@ def collect_and_sort_mesh_vertices(armature):
 
         eval_obj.to_mesh_clear()
 
-    # 4) Flatten: all single‑weight by bone order, then all two‑weight
+    # 4) Flatten: all single-weight by bone order, then all two-weight (sorted by bone pairs)
     sorted_verts = []
     bone_ranges = {}
     cursor = 0
+
+    # Group 1-weighted verts
     for bone_id in range(len(armature.data.bones)):
         verts = single_by_bone.get(bone_id, [])
         count = len(verts)
         if count:
             sorted_verts.extend(verts)
-            # contiguous range:
             bone_ranges[bone_id] = (cursor, cursor + count - 1)
             cursor += count
 
-    # now append dual‑weight verts (they go after all singles)
-    sorted_verts.extend(two_weight)
+    # Sort 2-weight verts by (b0, b1)
+    two_weight_sorted = sorted(two_weight, key=lambda x: tuple(x[2]))
+
+    # Append them
+    sorted_verts.extend(two_weight_sorted)
 
     return sorted_verts, bone_ranges
+
 
 def collect_virtsegment_entries(sorted_verts, armature):
     """
@@ -210,48 +216,78 @@ class HInfoEntry:
 
 def collect_structured_hinfo_data(armature):
     entries = []
-    bones = armature.data.bones
-    for i, bone in enumerate(bones):
+    for i, bone in enumerate(armature.data.bones):
         pbone = armature.pose.bones.get(bone.name)
         if not pbone:
             continue
 
         entry = HInfoEntry(bone_index=i)
 
-        # Spheres
-        s = getattr(pbone, "tr7ae_sphere", None)
-        if s and s.radius > 0:
+        # ── HSpheres ──
+        for s in getattr(pbone, "tr7ae_hspheres", []):
+            if s.radius <= 0:
+                continue
             entry.spheres.append((
-                s.flags, s.id, s.rank, int(s.radius),
-                int(round(s.x)), int(round(s.y)), int(round(s.z)),
-                int(s.radius_sq), int(s.mass),
-                int(s.buoyancy_factor), int(s.explosion_factor),
-                int(s.material_type), int(s.pad),
-                int(s.damage)
+                int(s.flags),
+                int(s.id),
+                int(s.rank),
+                int(round(s.radius)),                      # scale → int
+                int(round(s.x)), int(round(s.y)), int(round(s.z)),  # pos → ints
+                int(round(s.radius_sq)),
+                int(round(s.mass)),
+                int(round(s.buoyancy_factor)),
+                int(round(s.explosion_factor)),
+                int(round(s.material_type)),
+                int(round(s.pad)),
+                int(round(s.damage)),
             ))
 
-        # HBoxes
-        h = getattr(pbone, "tr7ae_hbox", None)
-        if h and h.widthx != 0.0:
+        # ── HBoxes ──
+        for h in getattr(pbone, "tr7ae_hboxes", []):
+            if h.widthx == 0.0:
+                continue
             entry.hboxes.append((
-                h.widthx, h.widthy, h.widthz, h.widthw,
-                h.posx, h.posy, h.posz, h.posw,
+                int(round(h.widthx)),  # scale → int
+                int(round(h.widthy)),
+                int(round(h.widthz)),
+                int(round(h.widthw)),
+                int(round(h.posx)),     # pos → int
+                int(round(h.posy)),
+                int(round(h.posz)),
+                int(round(h.posw)),
                 h.quatx, h.quaty, h.quatz, h.quatw,
-                h.flags, h.id, h.rank, h.mass,
-                h.buoyancy_factor, h.explosion_factor,
-                h.material_type, h.pad, h.damage
+                int(h.flags),
+                int(h.id),
+                int(h.rank),
+                int(round(h.mass)),
+                int(round(h.buoyancy_factor)),
+                int(round(h.explosion_factor)),
+                int(h.material_type),
+                int(h.pad),
+                int(h.damage),
             ))
 
-        # HCapsules
-        c = getattr(pbone, "tr7ae_hcapsule", None)
-        if c and c.flags != 0:
+        # ── HCapsules ──
+        for c in getattr(pbone, "tr7ae_hcapsules", []):
+            if c.flags == 0:
+                continue
             entry.hcapsules.append((
-                c.posx, c.posy, c.posz, c.posw,
+                c.posx,    # pos → int
+                c.posy,
+                c.posz,
+                c.posw,
                 c.quatx, c.quaty, c.quatz, c.quatw,
-                c.flags, c.id, c.rank, c.radius,
-                c.mass, c.length,
-                c.buoyancy_factor, c.explosion_factor,
-                c.material_type, c.pad, c.damage
+                int(c.flags),
+                int(c.id),
+                int(c.rank),
+                int(round(c.radius)),  # scale → int
+                int(round(c.length)),  # scale → int
+                int(round(c.mass)),
+                int(round(c.buoyancy_factor)),
+                int(round(c.explosion_factor)),
+                int(c.material_type),
+                int(c.pad),
+                int(c.damage),
             ))
 
         # Markers: This assumes a list stored on the pose bone
@@ -272,10 +308,8 @@ def collect_structured_hinfo_data(armature):
                 rx, ry, rz
             ))
 
-        # Capsules: optional
-        # Add your logic here if you support them in the UI
-
-        if entry.spheres or entry.hboxes or entry.hmarkers or entry.hcapsules:
+        # only include bones that have any data
+        if entry.spheres or entry.hboxes or entry.hcapsules or entry.hmarkers:
             entries.append(entry)
 
     return entries
@@ -323,6 +357,14 @@ class TR7AE_OT_ExportCustomModel(Operator):
                     for i, (mesh, orig_idx, _) in enumerate(sorted_verts)
                 }
                 virt_entries = collect_virtsegment_entries(sorted_verts, armature)
+                if len(virt_entries) > 153:
+                    self.report({'WARNING'}, (
+                        "WARNING! Your model contains too many dual-weighted vertices with different bone indices and weight values,\n "
+                        "resulting in a count of "
+                        "virtual Segments higher than 153. This will cause crashes if any of your materials have "
+                        "the \"Flat Shading\" flag enabled.\n\n"
+                        "If you are indeed using that flag, please reduce the count of your dual-weighted vertices."
+                    ))
                 # Map from vertex index in sorted_verts to final segment index
                 # Maps vertex index in sorted_verts → virtual segment index
                 virt_segment_lookup = {}
@@ -818,19 +860,35 @@ class TR7AE_OT_ExportCustomModel(Operator):
                     texture_id   = int(material.get("tr7ae_texture_id", 0)) if material else 0
                     blend_value  = int(material.get("tr7ae_blend_value", 0)) if material else 0
                     unknown_1    = int(material.get("tr7ae_unknown_1", 0)) if material else 0
-                    single_sided = int(material.use_backface_culling) if material else 1
                     unknown_2    = int(material.get("tr7ae_unknown_2", 0)) if material else 0
+                    single_sided = int(material.use_backface_culling) if material else 1
+                    texture_wrap    = int(material.get("tr7ae_texture_wrap", 0)) if material else 0
+                    unknown_3    = int(material.get("tr7ae_unknown_3", 0)) if material else 0
+                    unknown_4    = int(material.get("tr7ae_unknown_4", 0)) if material else 0
+                    flat_shading    = int(material.get("tr7ae_flat_shading", 0)) if material else 0
+                    sort_z    = int(material.get("tr7ae_sort_z", 0)) if material else 0
+                    stencil_pass    = int(material.get("tr7ae_stencil_pass", 0)) if material else 0
+                    stencil_func    = int(material.get("tr7ae_stencil_func", 0)) if material else 0
+                    alpha_ref    = int(material.get("tr7ae_alpha_ref", 0)) if material else 0
 
                     # print(f"[DEBUG] Mesh: {mesh_obj.name}")
                     # print(f"[DEBUG] Material: {material.name if material else 'None'}")
                     # print(f"[DEBUG] texture_id={texture_id}, blend={blend_value}, unk1={unknown_1}, single_sided={single_sided}, unk2={unknown_2}")
 
                     tpageid = (
-                        (texture_id & 0x1FFF) |
-                        ((blend_value & 0xF) << 13) |
-                        ((unknown_1 & 0xF) << 17) |
-                        ((single_sided & 0x1) << 21) |
-                        ((unknown_2 & 0x3FF) << 22)
+                        (texture_id   & 0x1FFF)      |  # bits 0–12
+                        ((blend_value & 0xF)   << 13) |  # bits 13–16
+                        ((unknown_1   & 0x7)   << 17) |  # bits 17–19
+                        ((unknown_2   & 0x1)   << 20) |  # bit 20
+                        ((single_sided & 0x1) << 21) |  # bit 21
+                        ((texture_wrap & 0x3) << 22) |  # bits 22–23
+                        ((unknown_3   & 0x1)   << 24) |  # bit 24
+                        ((unknown_4   & 0x1)   << 25) |  # bit 25
+                        ((flat_shading & 0x1) << 26) |  # bit 26
+                        ((sort_z      & 0x1)   << 27) |  # bit 27
+                        ((stencil_pass & 0x3) << 28) |  # bits 28–29
+                        ((stencil_func & 0x1) << 30) |  # bit 30
+                        ((alpha_ref   & 0x1)   << 31)   # bit 31
                     )
 
                     mb.write(struct.pack("<2h", vertex_count, draw_group))
@@ -1355,8 +1413,8 @@ class TR7AE_HCapsuleInfo(bpy.types.PropertyGroup):
     flags: bpy.props.IntProperty(name="Flags")
     id: bpy.props.IntProperty(name="ID")
     rank: bpy.props.IntProperty(name="Rank")
-    radius: bpy.props.IntProperty(name="Radius")
-    length: bpy.props.IntProperty(name="Length")
+    radius: bpy.props.FloatProperty(name="Radius")
+    length: bpy.props.FloatProperty(name="Length")
     mass: bpy.props.IntProperty(name="Mass")
     buoyancy_factor: bpy.props.IntProperty(name="Buoyancy Factor")
     explosion_factor: bpy.props.IntProperty(name="Explosion Factor")
@@ -1901,72 +1959,123 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
 
                 if num_hspheres > 0 and hsphere_list != 0:
                     file.seek(hsphere_list + section_info_size)
-                    hinfo["sphere"] = {
-                        "flags": struct.unpack("<H", file.read(2))[0],
-                        "id": struct.unpack("<B", file.read(1))[0],
-                        "rank": struct.unpack("<B", file.read(1))[0],
-                        "radius": struct.unpack("<H", file.read(2))[0],
-                        "x": struct.unpack("<h", file.read(2))[0],
-                        "y": struct.unpack("<h", file.read(2))[0],
-                        "z": struct.unpack("<h", file.read(2))[0],
-                        "radius_sq": struct.unpack("<I", file.read(4))[0],
-                        "mass": struct.unpack("<H", file.read(2))[0],
-                        "buoyancy_factor": struct.unpack("<B", file.read(1))[0],
-                        "explosion_factor": struct.unpack("<B", file.read(1))[0],
-                        "material_type": struct.unpack("<B", file.read(1))[0],
-                        "pad": struct.unpack("<B", file.read(1))[0],
-                        "damage": struct.unpack("<H", file.read(2))[0],
-                    }
+                    spheres = []
+                    for _ in range(num_hspheres):
+                        flags = struct.unpack("<H", file.read(2))[0]
+                        id = struct.unpack("<B", file.read(1))[0]
+                        rank = struct.unpack("<B", file.read(1))[0]
+                        radius = struct.unpack("<H", file.read(2))[0]
+                        x = struct.unpack("<h", file.read(2))[0]
+                        y = struct.unpack("<h", file.read(2))[0]
+                        z = struct.unpack("<h", file.read(2))[0]
+                        radius_sq = struct.unpack("<I", file.read(4))[0]
+                        mass = struct.unpack("<H", file.read(2))[0]
+                        buoyancy_factor = struct.unpack("<B", file.read(1))[0]
+                        explosion_factor = struct.unpack("<B", file.read(1))[0]
+                        material_type = struct.unpack("<B", file.read(1))[0]
+                        pad = struct.unpack("<B", file.read(1))[0]
+                        damage = struct.unpack("<H", file.read(2))[0]
+                        spheres.append({
+                            "flags": flags,
+                            "id": id,
+                            "rank": rank,
+                            "radius": radius,
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "radius_sq": radius_sq,
+                            "mass": mass,
+                            "buoyancy_factor": buoyancy_factor,
+                            "explosion_factor": explosion_factor,
+                            "material_type": material_type,
+                            "pad": pad,
+                            "damage": damage,
+                        })
+                    hinfo["spheres"] = spheres
 
-                if num_hboxes > 0 and hbox_list != 0:
+                # ── Parser section (where you read num_hboxes and hbox_list) ──
+                # … inside your import routine, where you parse hinfo …
+
+                if num_hboxes > 0 and hbox_list:
                     file.seek(hbox_list + section_info_size)
-                    hinfo["hboxes"] = {
-                        "widthx": struct.unpack("<f", file.read(4))[0],
-                        "widthy": struct.unpack("<f", file.read(4))[0],
-                        "widthz": struct.unpack("<f", file.read(4))[0],
-                        "widthw": struct.unpack("<f", file.read(4))[0],
-                        "posx": struct.unpack("<f", file.read(4))[0],
-                        "posy": struct.unpack("<f", file.read(4))[0],
-                        "posz": struct.unpack("<f", file.read(4))[0],
-                        "posw": struct.unpack("<f", file.read(4))[0],
-                        "quatx": struct.unpack("<f", file.read(4))[0],
-                        "quaty": struct.unpack("<f", file.read(4))[0],
-                        "quatz": struct.unpack("<f", file.read(4))[0],
-                        "quatw": struct.unpack("<f", file.read(4))[0],
-                        "flags": struct.unpack("<h", file.read(2))[0],
-                        "id": struct.unpack("<B", file.read(1))[0],
-                        "rank": struct.unpack("<B", file.read(1))[0],
-                        "mass": struct.unpack("<H", file.read(2))[0],
-                        "buoyancy_factor": struct.unpack("<B", file.read(1))[0],
-                        "explosion_factor": struct.unpack("<B", file.read(1))[0],
-                        "material_type": struct.unpack("<B", file.read(1))[0],
-                        "pad": struct.unpack("<B", file.read(1))[0],
-                        "damage": struct.unpack("<h", file.read(2))[0]
-                    }
+                    boxes = []
+                    for _ in range(num_hboxes):
+                        # 1) widths
+                        wx, wy, wz, ww = struct.unpack("<4f", file.read(16))
+                        # 2) positions
+                        px, py, pz, pw = struct.unpack("<4f", file.read(16))
+                        # 3) orientation quaternion
+                        qx, qy, qz, qw = struct.unpack("<4f", file.read(16))
+                        # 4) integer fields
+                        flags    = struct.unpack("<h", file.read(2))[0]
+                        id_      = struct.unpack("<B", file.read(1))[0]
+                        rank     = struct.unpack("<B", file.read(1))[0]
+                        mass     = struct.unpack("<H", file.read(2))[0]
+                        buoyancy = struct.unpack("<B", file.read(1))[0]
+                        expl     = struct.unpack("<B", file.read(1))[0]
+                        mat_type = struct.unpack("<B", file.read(1))[0]
+                        pad      = struct.unpack("<B", file.read(1))[0]
+                        damage   = struct.unpack("<h", file.read(2))[0]
+
+                        boxes.append({
+                            "widthx": wx, "widthy": wy, "widthz": wz, "widthw": ww,
+                            "posx": px,   "posy": py,   "posz": pz,   "posw": pw,
+                            "quatx": qx,  "quaty": qy,  "quatz": qz,  "quatw": qw,
+                            "flags": flags,     "id": id_,       "rank": rank,
+                            "mass": mass,       "buoyancy_factor": buoyancy,
+                            "explosion_factor": expl,
+                            "material_type": mat_type,
+                            "pad": pad,         "damage": damage
+                        })
+                    hinfo["boxes"] = boxes
+
 
                 if num_hcapsules > 0 and hcapsule_list != 0:
                     file.seek(hcapsule_list + section_info_size)
-                    hinfo["hcapsules"] = {
-                        "posx": struct.unpack("<f", file.read(4))[0],
-                        "posy": struct.unpack("<f", file.read(4))[0],
-                        "posz": struct.unpack("<f", file.read(4))[0],
-                        "posw": struct.unpack("<f", file.read(4))[0],
-                        "quatx": struct.unpack("<f", file.read(4))[0],
-                        "quaty": struct.unpack("<f", file.read(4))[0],
-                        "quatz": struct.unpack("<f", file.read(4))[0],
-                        "quatw": struct.unpack("<f", file.read(4))[0],
-                        "flags": struct.unpack("<h", file.read(2))[0],
-                        "id": struct.unpack("<B", file.read(1))[0],
-                        "rank": struct.unpack("<B", file.read(1))[0],
-                        "radius": struct.unpack("<H", file.read(2))[0],
-                        "length": struct.unpack("<H", file.read(2))[0],
-                        "mass": struct.unpack("<H", file.read(2))[0],
-                        "buoyancy_factor": struct.unpack("<B", file.read(1))[0],
-                        "explosion_factor": struct.unpack("<B", file.read(1))[0],
-                        "material_type": struct.unpack("<B", file.read(1))[0],
-                        "pad": struct.unpack("<B", file.read(1))[0],
-                        "damage": struct.unpack("<h", file.read(2))[0]
-                    }
+                    capsules = []
+                    for _ in range(num_hcapsules):
+                        posx  = struct.unpack("<f", file.read(4))[0]
+                        posy  = struct.unpack("<f", file.read(4))[0]
+                        posz  = struct.unpack("<f", file.read(4))[0]
+                        posw  = struct.unpack("<f", file.read(4))[0]
+                        quatx = struct.unpack("<f", file.read(4))[0]
+                        quaty = struct.unpack("<f", file.read(4))[0]
+                        quatz = struct.unpack("<f", file.read(4))[0]
+                        quatw = struct.unpack("<f", file.read(4))[0]
+                        flags = struct.unpack("<h", file.read(2))[0]
+                        cid   = struct.unpack("<B", file.read(1))[0]
+                        rank  = struct.unpack("<B", file.read(1))[0]
+                        radius= struct.unpack("<H", file.read(2))[0]
+                        length= struct.unpack("<H", file.read(2))[0]
+                        mass  = struct.unpack("<H", file.read(2))[0]
+                        buoyancy = struct.unpack("<B", file.read(1))[0]
+                        explosion= struct.unpack("<B", file.read(1))[0]
+                        mat_type = struct.unpack("<B", file.read(1))[0]
+                        pad      = struct.unpack("<B", file.read(1))[0]
+                        damage   = struct.unpack("<h", file.read(2))[0]
+
+                        capsules.append({
+                            "posx":            posx,
+                            "posy":            posy,
+                            "posz":            posz,
+                            "posw":            posw,
+                            "quatx":           quatx,
+                            "quaty":           quaty,
+                            "quatz":           quatz,
+                            "quatw":           quatw,
+                            "flags":           flags,
+                            "id":              cid,
+                            "rank":            rank,
+                            "radius":          radius,
+                            "length":          length,
+                            "mass":            mass,
+                            "buoyancy_factor": buoyancy,
+                            "explosion_factor":explosion,
+                            "material_type":   mat_type,
+                            "pad":             pad,
+                            "damage":          damage,
+                        })
+                    hinfo["capsules"] = capsules
 
                 if num_hmarkers > 0 and hmarker_list != 0:
                     file.seek(hmarker_list + section_info_size)
@@ -2076,11 +2185,19 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
             fhandle.seek(start)
             vertex_count, draw_group = read("<2h")
             tpageid = struct.unpack("<I", fhandle.read(4))[0]
-            texture_id     =  tpageid        & 0x1FFF           # bits 0-12 (13 bits)
-            blend_value    = (tpageid >> 13) & 0xF              # bits 13-16 (4 bits)
-            unknown_1      = (tpageid >> 17) & 0xF              # bits 17-20 (4 bits)
-            single_sided   = (tpageid >> 21) & 0x1              # bit 21 (1 bit)
-            unknown_2      = (tpageid >> 22) & 0x3FF            # bits 22-31 (10 bits)
+            texture_id        =  tpageid        & 0x1FFF          # bits  0–12 (13 bits)
+            blend_value       = (tpageid >> 13) & 0xF             # bits 13–16 (4 bits)
+            unknown_1         = (tpageid >> 17) & 0x7             # bits 17–19 (3 bits)
+            unknown_2         = (tpageid >> 20) & 0x1             # bit     20 (1 bit)
+            single_sided      = (tpageid >> 21) & 0x1             # bit     21 (1 bit)
+            texture_wrap      = (tpageid >> 22) & 0x3             # bits 22–23 (2 bits)
+            unknown_3         = (tpageid >> 24) & 0x1             # bit     24 (1 bit)
+            unknown_4         = (tpageid >> 25) & 0x1             # bit     25 (1 bit)
+            flat_shading      = (tpageid >> 26) & 0x1  # ✅
+            sort_z            = (tpageid >> 27) & 0x1  # ✅
+            stencil_pass      = (tpageid >> 28) & 0x3  # ✅ 2 bits
+            stencil_func      = (tpageid >> 30) & 0x1  # ✅
+            alpha_ref         = (tpageid >> 31) & 0x1  # ✅
             fhandle.read(12)
             fhandle.seek(-4, 1)
             next_texture = read("<I")[0]
@@ -2098,7 +2215,7 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
             chunk_uvs = [uvs[i] for i in sorted(chunk_verts_set)]
             chunk_normals = [normals[i] for i in sorted(chunk_verts_set)]
             chunk_segments = [segments[i] for i in sorted(chunk_verts_set)]
-            mesh_chunks.append((chunk_verts, remapped_faces, chunk_uvs, chunk_normals, chunk_segments, draw_group, chunk_vert_map, texture_id, blend_value, single_sided, unknown_1, unknown_2))
+            mesh_chunks.append((chunk_verts, remapped_faces, chunk_uvs, chunk_normals, chunk_segments, draw_group, chunk_vert_map, texture_id, blend_value, unknown_1, unknown_2, single_sided, texture_wrap, unknown_3, unknown_4, flat_shading, sort_z, stencil_pass, stencil_func, alpha_ref))
             if next_texture == 0:
                 break
             fhandle.seek(next_texture + section_info_size)
@@ -2176,176 +2293,115 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                 pbone["min_q"] = bone["min"]
                 pbone["max_q"] = bone["max"]
             hinfo = bone.get("hinfo")
+
             if hinfo:
-                if "sphere" in hinfo:
-                    sphere = hinfo["sphere"]
-                    clean_sphere = {k: float(v) if isinstance(v, (int, float)) else v for k, v in sphere.items()}
-                    sphere_data = hinfo["sphere"]
-                    pbone.tr7ae_sphere.flags = sphere_data["flags"]
-                    pbone.tr7ae_sphere.id = sphere_data["id"]
-                    pbone.tr7ae_sphere.rank = sphere_data["rank"]
-                    pbone.tr7ae_sphere.radius = sphere_data["radius"]
-                    pbone.tr7ae_sphere.x = sphere_data["x"]
-                    pbone.tr7ae_sphere.y = sphere_data["y"]
-                    pbone.tr7ae_sphere.z = sphere_data["z"]
-                    pbone.tr7ae_sphere.radius_sq = sphere_data["radius_sq"]
-                    pbone.tr7ae_sphere.mass = sphere_data["mass"]
-                    pbone.tr7ae_sphere.buoyancy_factor = sphere_data["buoyancy_factor"]
-                    pbone.tr7ae_sphere.explosion_factor = sphere_data["explosion_factor"]
-                    pbone.tr7ae_sphere.material_type = sphere_data["material_type"]
-                    pbone.tr7ae_sphere.pad = sphere_data["pad"]
-                    pbone.tr7ae_sphere.damage = sphere_data["damage"]
-                    # Create a UV sphere for the HSphere
-                    sphere_obj = bpy.data.objects.new(f"HSphere_{i}", bpy.data.meshes.new(f"HSphereMesh_{i}"))
-                    bpy.context.collection.objects.link(sphere_obj)
-                    sphere_obj["tr7ae_type"] = "HSphere"
-                    sphere_obj["tr7ae_bone_index"] = i
-                    # Parent to HInfo object if it exists or create it
-                    if "HInfo" not in bpy.data.objects:
-                        hinfo_obj = bpy.data.objects.new("HInfo", None)
-                        hinfo_obj.empty_display_type = 'PLAIN_AXES'
-                        hinfo_obj.empty_display_size = 0.3
-                        context.collection.objects.link(hinfo_obj)
-                        hinfo_obj.parent = armature_obj
-                        hinfo_obj.matrix_parent_inverse.identity()
-                    else:
-                        hinfo_obj = bpy.data.objects["HInfo"]
+                if "spheres" in hinfo:
+                    clean_spheres = []
+                    for sphere in hinfo["spheres"]:
+                        clean_sphere = {
+                            "flags": int(sphere["flags"]),
+                            "id": int(sphere["id"]),
+                            "rank": int(sphere["rank"]),
+                            "radius": int(sphere["radius"]),
+                            "x": int(sphere["x"]),
+                            "y": int(sphere["y"]),
+                            "z": int(sphere["z"]),
+                            "radius_sq": int(sphere["radius_sq"]),
+                            "mass": int(sphere["mass"]),
+                            "buoyancy_factor": int(sphere["buoyancy_factor"]),
+                            "explosion_factor": int(sphere["explosion_factor"]),
+                            "material_type": int(sphere["material_type"]),
+                            "pad": int(sphere["pad"]),
+                            "damage": int(sphere["damage"]),
+                        }
+                        clean_spheres.append(clean_sphere)
+                    pbone.tr7ae_hspheres.clear()
+                    for sphere in clean_spheres:
+                        item = pbone.tr7ae_hspheres.add()
+                        item.flags = sphere["flags"]
+                        item.id = sphere["id"]
+                        item.rank = sphere["rank"]
+                        item.radius = sphere["radius"]
+                        item.x = sphere["x"]
+                        item.y = sphere["y"]
+                        item.z = sphere["z"]
+                        item.radius_sq = sphere["radius_sq"]
+                        item.mass = sphere["mass"]
+                        item.buoyancy_factor = sphere["buoyancy_factor"]
+                        item.explosion_factor = sphere["explosion_factor"]
+                        item.material_type = sphere["material_type"]
+                        item.pad = sphere["pad"]
+                        item.damage = sphere["damage"]
 
-                    sphere_obj.parent = hinfo_obj
-                    sphere_obj.matrix_parent_inverse.identity()
+                # ── Importer section (where you consume hinfo for each bone) ──
+                if "boxes" in hinfo:
+                    pbone.tr7ae_hboxes.clear()
+                    for box in hinfo["boxes"]:
+                        item = pbone.tr7ae_hboxes.add()
+                        # full-width
+                        item.widthx = box["widthx"]
+                        item.widthy = box["widthy"]
+                        item.widthz = box["widthz"]
+                        item.widthw = box["widthw"]
+                        # full-position
+                        item.posx   = box["posx"]
+                        item.posy   = box["posy"]
+                        item.posz   = box["posz"]
+                        item.posw   = box["posw"]
+                        # orientation
+                        item.quatx  = box["quatx"]
+                        item.quaty  = box["quaty"]
+                        item.quatz  = box["quatz"]
+                        item.quatw  = box["quatw"]
+                        # flags & IDs
+                        item.flags  = box.get("flags", 0)
+                        item.id     = box.get("id", 0)
+                        item.rank   = box.get("rank", 0)
+                        # physical properties
+                        item.mass             = box.get("mass", 0)
+                        item.buoyancy_factor  = box.get("buoyancy_factor", 0)
+                        item.explosion_factor = box.get("explosion_factor", 0)
+                        item.material_type    = box.get("material_type", 0)
+                        item.pad              = box.get("pad", 0)
+                        item.damage           = box.get("damage", 0)
 
-                    # Generate the mesh
-                    bpy.ops.mesh.primitive_uv_sphere_add(
-                        radius=100.0, 
-                        segments=16, 
-                        ring_count=8, 
-                        location=(0, 0, 0)
-                    )
-                    temp_sphere = bpy.context.active_object
-                    sphere_obj.data = temp_sphere.data
-                    sphere_obj.display_type = 'WIRE'
-                    sphere_obj.show_in_front = True
-                    bpy.data.objects.remove(temp_sphere, do_unlink=True)
+                # ── Import HCapsules into the pose-bone custom props ──
+                if "capsules" in hinfo:
+                    # clear out any old entries
+                    pbone.tr7ae_hcapsules.clear()
 
-                    s = pbone.tr7ae_sphere
+                    # for each raw capsule dict in your hinfo…
+                    for cap in hinfo["capsules"]:
+                        item = pbone.tr7ae_hcapsules.add()
 
-                    # Local offset from the bone
-                    local_offset = Vector((s.x, s.y, s.z))
+                        # positions (floats)
+                        item.posx = cap.get("posx", 0.0)
+                        item.posy = cap.get("posy", 0.0)
+                        item.posz = cap.get("posz", 0.0)
+                        item.posw = cap.get("posw", 1.0)
 
-                    # Use radius directly or sqrt(radius_sq) if needed
-                    s.radius = hinfo["sphere"]["radius"] * 0.01
-                    radius = s.radius if s.radius > 0 else s.radius_sq ** 0.5
+                        # orientation (quaternion)
+                        item.quatx = cap.get("quatx", 0.0)
+                        item.quaty = cap.get("quaty", 0.0)
+                        item.quatz = cap.get("quatz", 0.0)
+                        item.quatw = cap.get("quatw", 1.0)
 
-                    # Set position relative to bone's rest matrix
-                    bone_matrix = armature_obj.matrix_world @ armature_obj.data.bones[f"Bone_{i}"].matrix_local
-                    world_pos = bone_matrix @ local_offset
+                        # flags & identifiers
+                        item.flags = cap.get("flags", 0)
+                        item.id    = cap.get("id",    0)
+                        item.rank  = cap.get("rank",  0)
 
-                    sphere_obj.parent = hinfo_obj
-                    sphere_obj.matrix_parent_inverse.identity()
-                    sphere_obj.location = hinfo_obj.matrix_world.inverted() @ world_pos
-                    sphere_obj.scale = (radius, radius, radius)
-                    vg = sphere_obj.vertex_groups.new(name=f"Bone_{i}")
-                    vg.add(range(len(sphere_obj.data.vertices)), 1.0, 'REPLACE')
+                        # geometry
+                        item.radius = cap.get("radius", 0)
+                        item.length = cap.get("length", 0)
 
-                    mod = sphere_obj.modifiers.new(name="Armature", type='ARMATURE')
-                    mod.object = armature_obj
-
-                if "hboxes" in hinfo:
-                    hbox = hinfo["hboxes"]
-                    pbone.tr7ae_hbox.widthx = hbox["widthx"]
-                    pbone.tr7ae_hbox.widthy = hbox["widthy"]
-                    pbone.tr7ae_hbox.widthz = hbox["widthz"]
-                    pbone.tr7ae_hbox.widthw = hbox["widthw"]
-                    pbone.tr7ae_hbox.posx = hbox["posx"]
-                    pbone.tr7ae_hbox.posy = hbox["posy"]
-                    pbone.tr7ae_hbox.posz = hbox["posz"]
-                    pbone.tr7ae_hbox.posw = hbox["posw"]
-                    pbone.tr7ae_hbox.quatx = hbox["quatx"]
-                    pbone.tr7ae_hbox.quaty = hbox["quaty"]
-                    pbone.tr7ae_hbox.quatz = hbox["quatz"]
-                    pbone.tr7ae_hbox.quatw = hbox["quatw"]
-                    pbone.tr7ae_hbox.flags = hbox["flags"]
-                    pbone.tr7ae_hbox.id = hbox["id"]
-                    pbone.tr7ae_hbox.rank = hbox["rank"]
-                    pbone.tr7ae_hbox.mass = hbox["mass"]
-                    pbone.tr7ae_hbox.buoyancy_factor = hbox["buoyancy_factor"]
-                    pbone.tr7ae_hbox.explosion_factor = hbox["explosion_factor"]
-                    pbone.tr7ae_hbox.material_type = hbox["material_type"]
-                    pbone.tr7ae_hbox.pad = hbox["pad"]
-                    pbone.tr7ae_hbox.damage = hbox["damage"]
-
-                    box = pbone.tr7ae_hbox
-
-                    # Create a cube primitive
-                    bpy.ops.mesh.primitive_cube_add(size=1.0)
-                    temp_cube = bpy.context.active_object
-                    box_data = temp_cube.data.copy()
-                    bpy.data.objects.remove(temp_cube, do_unlink=True)
-
-                    # Create HBox object and link to collection
-                    box_obj = bpy.data.objects.new(f"HBox_{i}", box_data)
-                    context.collection.objects.link(box_obj)
-                    box_obj["tr7ae_type"] = "HBox"
-                    box_obj["tr7ae_bone_index"] = i
-                    # Apply position, rotation, scale directly (raw values)
-                    box_obj.location = Vector((box.posx, box.posy, box.posz))
-                    box_obj.rotation_mode = 'QUATERNION'
-                    box_obj.rotation_quaternion = Quaternion((box.quatw, box.quatx, box.quaty, box.quatz))
-                    box_obj.scale = Vector((box.widthx, box.widthy, box.widthz))
-
-                    # Display settings for clarity
-                    box_obj.display_type = 'WIRE'
-                    box_obj.show_in_front = True
-
-                    # Parent to HInfo (create if not exists)
-                    if "HInfo" not in bpy.data.objects:
-                        hinfo_obj = bpy.data.objects.new("HInfo", None)
-                        hinfo_obj.empty_display_type = 'PLAIN_AXES'
-                        hinfo_obj.empty_display_size = 0.3
-                        context.collection.objects.link(hinfo_obj)
-                        hinfo_obj.parent = armature_obj
-                        hinfo_obj.matrix_parent_inverse.identity()
-                    else:
-                        hinfo_obj = bpy.data.objects["HInfo"]
-
-                    box_obj.parent = hinfo_obj
-                    box_obj.matrix_parent_inverse.identity()
-
-                    # Skin to bone
-                    bone_name = f"Bone_{i}"
-                    vg = box_obj.vertex_groups.new(name=bone_name)
-                    vg.add(range(len(box_obj.data.vertices)), 1.0, 'REPLACE')
-
-                    mod = box_obj.modifiers.new(name="Armature", type='ARMATURE')
-                    mod.object = armature_obj
-
-                if "hcapsules" in hinfo:
-                    hcapsule = hinfo["hcapsules"]
-
-                    if pbone.tr7ae_hcapsule is None:
-                        pbone.tr7ae_hcapsule = bpy.types.TR7AE_HCapsuleInfo()
-                    hcapsule = hinfo["hcapsules"]
-                    pbone.tr7ae_hcapsule.posx = hcapsule["posx"]
-                    pbone.tr7ae_hcapsule.posy = hcapsule["posy"]
-                    pbone.tr7ae_hcapsule.posz = hcapsule["posz"]
-                    pbone.tr7ae_hcapsule.posw = hcapsule["posw"]
-                    pbone.tr7ae_hcapsule.quatx = hcapsule["quatx"]
-                    pbone.tr7ae_hcapsule.quaty = hcapsule["quaty"]
-                    pbone.tr7ae_hcapsule.quatz = hcapsule["quatz"]
-                    pbone.tr7ae_hcapsule.quatw = hcapsule["quatw"]
-                    pbone.tr7ae_hcapsule.flags = hcapsule["flags"]
-                    pbone.tr7ae_hcapsule.id = hcapsule["id"]
-                    pbone.tr7ae_hcapsule.rank = hcapsule["rank"]
-                    pbone.tr7ae_hcapsule.radius = hcapsule["radius"]
-                    pbone.tr7ae_hcapsule.length = hcapsule["length"]
-                    pbone.tr7ae_hcapsule.mass = hcapsule["mass"]
-                    pbone.tr7ae_hcapsule.buoyancy_factor = hcapsule["buoyancy_factor"]
-                    pbone.tr7ae_hcapsule.explosion_factor = hcapsule["explosion_factor"]
-                    pbone.tr7ae_hcapsule.material_type = hcapsule["material_type"]
-                    pbone.tr7ae_hcapsule.pad = hcapsule["pad"]
-                    pbone.tr7ae_hcapsule.damage = hcapsule["damage"]
-
-                    capsule = pbone.tr7ae_hcapsule
+                        # physical
+                        item.mass            = cap.get("mass",            0)
+                        item.buoyancy_factor = cap.get("buoyancy_factor", 0)
+                        item.explosion_factor= cap.get("explosion_factor",0)
+                        item.material_type   = cap.get("material_type",   0)
+                        item.pad             = cap.get("pad",             0)
+                        item.damage          = cap.get("damage",          0)
 
                 if "markers" in hinfo:
                     clean_markers = []
@@ -2429,6 +2485,183 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                         # Add Armature Modifier
                         arm_mod = marker_obj.modifiers.new(name="Armature", type='ARMATURE')
                         arm_mod.object = armature_obj
+
+                if "spheres" in hinfo:
+                    for j, sphere in enumerate(hinfo["spheres"]):
+                        sphere_name = f"HSphere_{i}_{j}"
+                        bone_name = f"Bone_{i}"
+
+                        # Create a unit UV-sphere
+                        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, segments=16, ring_count=8)
+                        sphere_obj = bpy.context.active_object
+                        sphere_obj.name = sphere_name
+
+                        # tag this mesh as an HSphere and record its bone index
+                        sphere_obj["tr7ae_type"]       = "HSphere"
+                        sphere_obj["tr7ae_bone_index"] = i
+
+                        # Scale to match the imported radius
+                        r = sphere["radius"]
+                        sphere_obj.scale = (r, r, r)
+
+                        # Show as wireframe and always in front
+                        sphere_obj.display_type = 'WIRE'
+                        sphere_obj.show_in_front = True
+
+
+                        bone_matrix = armature_obj.matrix_world @ armature_obj.data.bones[bone_name].matrix_local
+                        local_pos = Vector((sphere["x"], sphere["y"], sphere["z"])).to_4d()
+                        world_pos = bone_matrix @ local_pos
+                        sphere_obj.location = hinfo_obj.matrix_world.inverted() @ world_pos.to_3d()
+
+                        sphere_obj.parent = hinfo_obj
+                        sphere_obj.matrix_parent_inverse.identity()
+
+                        if sphere_obj.name not in hinfo_collection.objects:
+                            hinfo_collection.objects.link(sphere_obj)
+
+                        vg = sphere_obj.vertex_groups.new(name=bone_name)
+                        bpy.context.view_layer.objects.active = sphere_obj
+                        bpy.ops.object.mode_set(mode='EDIT')
+                        bpy.ops.mesh.select_all(action='SELECT')
+                        bpy.ops.object.mode_set(mode='OBJECT')
+                        vg.add(range(len(sphere_obj.data.vertices)), 1.0, 'REPLACE')
+
+                        arm_mod = sphere_obj.modifiers.new(name="Armature", type='ARMATURE')
+                        arm_mod.object = armature_obj
+
+                if "boxes" in hinfo:
+                    for j, box in enumerate(hinfo["boxes"]):
+                        box_name  = f"HBox_{i}_{j}"
+                        bone_name = f"Bone_{i}"
+
+                        # create the cube
+                        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+                        box_obj = bpy.context.active_object
+                        box_obj.name = box_name
+
+                        # viewport settings
+                        box_obj.show_in_front = True
+                        box_obj.display_type  = 'WIRE'
+
+                        # scale down by 0.01 × half-extents
+                        box_obj.scale = (
+                            box["widthx"],
+                            box["widthy"],
+                            box["widthz"],
+                        )
+
+                        # position it
+                        box_obj.location = bone_matrix @ Vector((
+                            box["posx"] * 100,
+                            box["posy"] * 100,
+                            box["posz"] * 100,
+                        ))
+
+                        # parent to the single HInfo empty
+                        box_obj.parent      = hinfo_obj
+                        box_obj.parent_type = 'OBJECT'
+
+                        # move it into the HInfo collection for neatness
+                        if box_obj.name not in hinfo_collection.objects:
+                            hinfo_collection.objects.link(box_obj)
+                            for coll in box_obj.users_collection:
+                                if coll is not hinfo_collection:
+                                    coll.objects.unlink(box_obj)
+
+                        box_obj.parent      = hinfo_obj
+                        box_obj.parent_type = 'OBJECT'
+
+                        # move it into the HInfo collection for neatness
+                        if box_obj.name not in hinfo_collection.objects:
+                            hinfo_collection.objects.link(box_obj)
+                            for coll in box_obj.users_collection:
+                                if coll is not hinfo_collection:
+                                    coll.objects.unlink(box_obj)
+
+                        # add armature modifier so it deforms with your rig
+                        arm_mod = box_obj.modifiers.new(name="Armature", type='ARMATURE')
+                        arm_mod.object = armature_obj
+
+                        # vertex-group for the bone
+                        vg = box_obj.vertex_groups.new(name=bone_name)
+                        vg.add([v.index for v in box_obj.data.vertices], 1.0, 'REPLACE')
+
+                        # custom props
+                        box_obj["tr7ae_type"]       = "HBox"
+                        box_obj["tr7ae_bone_index"] = i
+                        box_obj["tr7ae_damage"]     = box["damage"]
+
+                if "capsules" in hinfo:
+                    for j, cap in enumerate(hinfo["capsules"]):
+                        capsule_name = f"HCapsule_{i}_{j}"
+                        bone_name    = f"Bone_{i}"
+
+                        # 1) Add a unit cylinder (just like we do a unit sphere for HSpheres)
+                        bpy.ops.mesh.primitive_cylinder_add(
+                            radius=1.0,
+                            depth=1.0,
+                            vertices=16,
+                            location=(0, 0, 0),
+                            rotation=(0, 0, 0),
+                            enter_editmode=False
+                        )
+                        capsule_obj = bpy.context.active_object
+                        capsule_obj.name = capsule_name
+                        capsule_obj["tr7ae_type"]       = "HCapsule"
+                        capsule_obj["tr7ae_bone_index"] = i
+
+                        # 2) Scale it to the real radius & length
+                        radius = cap.get("radius", 1.0)
+                        length = cap.get("length", 1.0)
+                        # Note: cylinder depth = 1.0 ⇒ Z-scale = length
+                        capsule_obj.scale = (radius, radius, length)
+
+                        # 3) Wireframe + always-in-front (just like HSphere)
+                        capsule_obj.display_type = 'WIRE'
+                        capsule_obj.show_in_front = True
+
+                        # 4) Compute bone-local → world → HInfo-local position
+                        pos_vec = Vector((
+                            cap.get("posx", 0.0),
+                            cap.get("posy", 0.0),
+                            cap.get("posz", 0.0),
+                            cap.get("posw", 1.0)
+                        ))
+                        bone_mat = (
+                            armature_obj.matrix_world @
+                            armature_obj.data.bones[bone_name].matrix_local
+                        )
+                        world_pos = bone_mat @ pos_vec
+                        capsule_obj.location = (
+                            hinfo_obj.matrix_world.inverted() @
+                            world_pos.to_3d()
+                        )
+
+                        # 5) Apply quaternion rotation
+                        capsule_obj.rotation_mode = 'QUATERNION'
+                        capsule_obj.rotation_quaternion = Quaternion((
+                            cap.get("quatw", 1.0),
+                            cap.get("quatx", 0.0),
+                            cap.get("quaty", 0.0),
+                            cap.get("quatz", 0.0),
+                        ))
+
+                        # 6) Parent to the HInfo empty + reset parent matrix
+                        capsule_obj.parent = hinfo_obj
+                        capsule_obj.matrix_parent_inverse.identity()
+
+                        # 7) Vert-group + Armature modifier
+                        vg = capsule_obj.vertex_groups.new(name=bone_name)
+                        bpy.context.view_layer.objects.active = capsule_obj
+                        bpy.ops.object.mode_set(mode='EDIT')
+                        bpy.ops.mesh.select_all(action='SELECT')
+                        bpy.ops.object.mode_set(mode='OBJECT')
+                        vg.add(range(len(capsule_obj.data.vertices)), 1.0, 'REPLACE')
+
+                        arm_mod = capsule_obj.modifiers.new(name="Armature", type='ARMATURE')
+                        arm_mod.object = armature_obj
+
         if do_import_cloth:
             try_import_cloth(filepath, armature_obj)
 
@@ -2537,7 +2770,7 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                                 vg_primary.add([v], 1.0 - weight, 'ADD')
 
 
-        for mesh_index, (chunk_verts, chunk_faces, chunk_uvs, chunk_normals, chunk_segments, draw_group, chunk_vert_map, texture_id, blend_value, single_sided, unknown_1, unknown_2) in enumerate(mesh_chunks):
+        for mesh_index, (chunk_verts, chunk_faces, chunk_uvs, chunk_normals, chunk_segments, draw_group, chunk_vert_map, texture_id, blend_value, unknown_1, unknown_2, single_sided, texture_wrap, unknown_3, unknown_4, flat_shading, sort_z, stencil_pass, stencil_func, alpha_ref) in enumerate(mesh_chunks):
             mesh = bpy.data.meshes.new(f"TR7AE_Mesh_{mesh_index}")
             mesh.from_pydata(chunk_verts, [], chunk_faces)
             mesh.update()
@@ -2791,11 +3024,19 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
             # Set officially registered props (avoids Custom Properties tab)
             mat.tr7ae_texture_id = texture_id
             mat.tr7ae_blend_value = blend_value
+            mat.tr7ae_unknown_1 = unknown_1
+            mat.tr7ae_unknown_2 = unknown_2
             mat.tr7ae_single_sided = bool(single_sided)
             if single_sided:
                 mat.use_backface_culling = True
-            mat.tr7ae_unknown_1 = unknown_1
-            mat.tr7ae_unknown_2 = unknown_2
+            mat.tr7ae_texture_wrap = texture_wrap
+            mat.tr7ae_unknown_3 = unknown_3
+            mat.tr7ae_unknown_4 = unknown_4
+            mat.tr7ae_flat_shading = flat_shading
+            mat.tr7ae_sort_z = sort_z
+            mat.tr7ae_stencil_pass = stencil_pass
+            mat.tr7ae_stencil_func = stencil_func
+            mat.tr7ae_alpha_ref = alpha_ref
 
             if unknown_1 == 2:
                     mat.use_transparency_overlap = False
@@ -2969,6 +3210,11 @@ class TR7AE_PT_Tools(Panel):
     bl_region_type = 'UI'
     bl_category = 'TR7AE'
 
+    _sphere_expand = {}
+    _box_expand = {}
+    _marker_expand = {}
+    _capsule_expand = {}
+
     def draw(self, context):
         layout = self.layout
         layout.operator(TR7AE_OT_ImportModel.bl_idname, icon='IMPORT')
@@ -3128,45 +3374,114 @@ class TR7AE_PT_SphereInfo(Panel):
 
     @classmethod
     def poll(cls, context):
+        bone = context.active_pose_bone
+        return bone and hasattr(bone, "tr7ae_hspheres") and len(bone.tr7ae_hspheres) > 0
+
+    def draw(self, context):
+        layout = self.layout
+        bone = context.active_pose_bone
+        expand_state = TR7AE_PT_Tools._sphere_expand
+
+        for i, sphere in enumerate(bone.tr7ae_hspheres):
+            key = f"{bone.name}_{i}"
+            expand_state.setdefault(key, False)
+
+            row = layout.row()
+            row.label(text=f"Sphere {i} (Flags: {sphere.flags})")
+            op = row.operator("tr7ae.toggle_sphere", text="", icon='TRIA_DOWN' if expand_state[key] else 'TRIA_RIGHT', emboss=False)
+            op.sphere_key = key
+
+            if expand_state[key]:
+                box = layout.box()
+                box.label(text=f"HSphere {i}")
+                box.prop(sphere, "flags")
+                box.prop(sphere, "id")
+                box.prop(sphere, "rank")
+                box.prop(sphere, "radius")
+                box.prop(sphere, "x")
+                box.prop(sphere, "y")
+                box.prop(sphere, "z")
+                box.prop(sphere, "radius_sq")
+                box.prop(sphere, "mass")
+                box.prop(sphere, "buoyancy_factor")
+                box.prop(sphere, "explosion_factor")
+                box.prop(sphere, "material_type")
+                box.prop(sphere, "pad")
+                box.prop(sphere, "damage")
+
+class TR7AE_PT_HSphereMeshInfo(bpy.types.Panel):
+    bl_label = "HSphere"
+    bl_idname = "TR7AE_PT_HSphereMeshInfo"
+    bl_parent_id = "TR7AE_PT_Tools"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'TR7AE'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
         obj = context.active_object
-
-        if not obj:
-            return False
-
-        if obj.type == 'ARMATURE' and context.mode == 'POSE':
-            bone = context.active_pose_bone
-            if bone:
-                s = bone.tr7ae_sphere
-                return any(getattr(s, key) != 0 for key in ("radius", "x", "y", "z"))
-
-        if obj.type == 'MESH' and obj.get("tr7ae_type") == "HSphere":
-            return True
-
-        return False
+        return obj and obj.type == 'MESH' and obj.get("tr7ae_type") == "HSphere"
 
     def draw(self, context):
         layout = self.layout
         obj = context.active_object
 
-        if obj.type == 'ARMATURE' and context.active_pose_bone:
-            sphere = context.active_pose_bone.tr7ae_sphere
-        elif obj.type == 'MESH' and obj.get("tr7ae_type") == "HSphere":
-            i = obj.get("tr7ae_bone_index")
-            arm = obj.find_armature()
-            if not arm:
-                layout.label(text="No armature found.")
-                return
-            bone = arm.pose.bones.get(f"Bone_{i}")
-            if not bone:
-                layout.label(text=f"No Bone_{i} found.")
-                return
-            sphere = bone.tr7ae_sphere
-        else:
-            layout.label(text="No valid HSphere found.")
+        # must have a bone index
+        bone_index = obj.get("tr7ae_bone_index")
+        if bone_index is None:
+            layout.label(text="Missing tr7ae_bone_index")
             return
 
-        for prop_name in TR7AE_SphereInfo.__annotations__.keys():
-            layout.prop(sphere, prop_name)
+        # find the armature and pose bone
+        arm = obj.find_armature()
+        if not arm:
+            layout.label(text="No armature found.")
+            return
+        bone = arm.pose.bones.get(f"Bone_{bone_index}")
+        if not bone or not bone.tr7ae_hspheres:
+            layout.label(text=f"No HSpheres for Bone_{bone_index}")
+            return
+
+        # parse sphere index from name: HSphere_<bone>_<idx>
+        try:
+            sphere_idx = int(obj.name.split("_")[-1])
+        except:
+            sphere_idx = 0
+        sph = bone.tr7ae_hspheres[sphere_idx]
+
+        # now draw the same props you have in the Sphere panel
+        layout.prop(sph, "id")
+        layout.prop(sph, "flags")
+        layout.prop(sph, "rank")
+        layout.prop(sph, "radius")
+        layout.prop(sph, "x", text="X")
+        layout.prop(sph, "y", text="Y")
+        layout.prop(sph, "z", text="Z")
+        layout.prop(sph, "radius_sq")
+        layout.prop(sph, "mass")
+        layout.prop(sph, "buoyancy_factor")
+        layout.prop(sph, "explosion_factor")
+        layout.prop(sph, "material_type")
+        layout.prop(sph, "pad")
+        layout.prop(sph, "damage")
+
+import bpy
+
+class TR7AE_OT_ToggleBox(bpy.types.Operator):
+    bl_idname = "tr7ae.toggle_box"
+    bl_label = "Toggle HBox Section"
+
+    box_key: bpy.props.StringProperty()
+
+    def execute(self, context):
+        expand = TR7AE_PT_Tools._box_expand
+        expand[self.box_key] = not expand.get(self.box_key, False)
+        return {'FINISHED'}
+
+
+import bpy
+from bpy.types import Panel
 
 class TR7AE_PT_HBoxInfo(Panel):
     bl_label = "HBox"
@@ -3180,48 +3495,144 @@ class TR7AE_PT_HBoxInfo(Panel):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-
-        if not obj:
-            return False
-
-        if obj.type == 'ARMATURE' and context.mode == 'POSE':
-            bone = context.active_pose_bone
-            if bone:
-                h = bone.tr7ae_hbox
-                return any(getattr(h, key) != 0 for key in ("widthx", "widthy", "widthz"))
-
-        if obj.type == 'MESH' and obj.get("tr7ae_type") == "HBox":
+        # show if we're in pose‐mode on an armature bone with HBoxes
+        if obj and obj.type == 'ARMATURE' and context.active_pose_bone:
+            return bool(context.active_pose_bone.tr7ae_hboxes)
+        # or if we have one of the HBox mesh objects selected
+        if obj and obj.type == 'MESH' and obj.get("tr7ae_type") == "HBox":
             return True
-
         return False
 
     def draw(self, context):
         layout = self.layout
-        obj = context.active_object
+        obj    = context.active_object
 
+        # 1) Armature + bone context
         if obj.type == 'ARMATURE' and context.active_pose_bone:
-            box = context.active_pose_bone.tr7ae_hbox
-        elif obj.type == 'MESH' and obj.get("tr7ae_type") == "HBox":
-            i = obj.get("tr7ae_bone_index")
-            arm = obj.find_armature()
-            if not arm:
-                layout.label(text="No armature found.")
-                return
-            bone = arm.pose.bones.get(f"Bone_{i}")
-            if not bone:
-                layout.label(text=f"No Bone_{i} found.")
-                return
-            box = bone.tr7ae_hbox
-        else:
-            layout.label(text="No valid HBox found.")
+            bone   = context.active_pose_bone
+            # if you only ever import one box per bone you can do bone.tr7ae_hboxes[0]
+            # but this will list them all in sequence:
+            for i, box in enumerate(bone.tr7ae_hboxes):
+                sub = layout.box()
+                sub.label(text=f"HBox {i}  (Flags: {box.flags})")
+                sub.prop(box, "widthx")
+                sub.prop(box, "widthy")
+                sub.prop(box, "widthz")
+                sub.prop(box, "widthw")
+                sub.prop(box, "posx")
+                sub.prop(box, "posy")
+                sub.prop(box, "posz")
+                sub.prop(box, "posw")
+                sub.prop(box, "quatx")
+                sub.prop(box, "quaty")
+                sub.prop(box, "quatz")
+                sub.prop(box, "quatw")
+                sub.prop(box, "flags")
+                sub.prop(box, "id")
+                sub.prop(box, "rank")
+                sub.prop(box, "mass")
+                sub.prop(box, "buoyancy_factor")
+                sub.prop(box, "explosion_factor")
+                sub.prop(box, "material_type")
+                sub.prop(box, "pad")
+                sub.prop(box, "damage")
             return
 
-        for prop_name in TR7AE_HBoxInfo.__annotations__.keys():
-            layout.prop(box, prop_name)
+        # 2) Mesh HBox context
+        if obj.type == 'MESH' and obj.get("tr7ae_type") == "HBox":
+            # find the armature and bone this cube came from
+            arm = obj.find_armature()
+            i   = obj.get("tr7ae_bone_index", 0)
+            bone = arm.pose.bones.get(f"Bone_{i}") if arm else None
+            if not bone:
+                layout.label(text="Could not find Bone_{i}")
+                return
+
+            # pull out the correct entry in the collection by parsing your name:
+            try:
+                idx = int(obj.name.rsplit("_", 1)[-1])
+            except:
+                idx = 0
+            box = bone.tr7ae_hboxes[idx]
+
+            # now precisely the same props as above:
+            layout.prop(box, "widthx")
+            layout.prop(box, "widthy")
+            layout.prop(box, "widthz")
+            layout.prop(box, "widthw")
+            layout.prop(box, "posx")
+            layout.prop(box, "posy")
+            layout.prop(box, "posz")
+            layout.prop(box, "posw")
+            layout.prop(box, "quatx")
+            layout.prop(box, "quaty")
+            layout.prop(box, "quatz")
+            layout.prop(box, "quatw")
+            layout.prop(box, "flags")
+            layout.prop(box, "id")
+            layout.prop(box, "rank")
+            layout.prop(box, "mass")
+            layout.prop(box, "buoyancy_factor")
+            layout.prop(box, "explosion_factor")
+            layout.prop(box, "material_type")
+            layout.prop(box, "pad")
+            layout.prop(box, "damage")
+            return
+
+        # fallback
+        layout.label(text="No HBox data available.")
+
+
+class TR7AE_OT_ToggleCapsule(bpy.types.Operator):
+    bl_idname = "tr7ae.toggle_capsule"
+    bl_label = "Toggle HCapsule Section"
+    capsule_key: bpy.props.StringProperty()
+    def execute(self, context):
+        expand = TR7AE_PT_Tools._capsule_expand
+        expand[self.capsule_key] = not expand.get(self.capsule_key, False)
+        return {'FINISHED'}
 
 class TR7AE_PT_HCapsuleInfo(Panel):
     bl_label = "HCapsule"
-    bl_idname = "TR7AE_PT_HCapsuleInfo"
+    bl_parent_id = "TR7AE_PT_Tools"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'TR7AE'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        bone = context.active_pose_bone
+        return bone and len(bone.tr7ae_hcapsules) > 0
+
+    def draw(self, context):
+        layout = self.layout
+        bone = context.active_pose_bone
+        expand = TR7AE_PT_Tools._capsule_expand
+
+        for i, cap in enumerate(bone.tr7ae_hcapsules):
+            key = f"{bone.name}_{i}"
+            expand.setdefault(key, False)
+
+            row = layout.row()
+            row.label(text=f"Capsule {i} (Flags: {cap.flags})")
+            op = row.operator("tr7ae.toggle_capsule", text="", 
+                              icon='TRIA_DOWN' if expand[key] else 'TRIA_RIGHT', emboss=False)
+            op.capsule_key = key
+
+            if expand[key]:
+                box = layout.box()
+                box.label(text=f"HCapsule {i}")
+                box.prop(cap, "posx"); box.prop(cap, "posy"); box.prop(cap, "posz"); box.prop(cap, "posw")
+                box.prop(cap, "quatx"); box.prop(cap, "quaty"); box.prop(cap, "quatz"); box.prop(cap, "quatw")
+                box.prop(cap, "flags"); box.prop(cap, "id"); box.prop(cap, "rank")
+                box.prop(cap, "radius"); box.prop(cap, "length"); box.prop(cap, "mass")
+                box.prop(cap, "buoyancy_factor"); box.prop(cap, "explosion_factor")
+                box.prop(cap, "material_type"); box.prop(cap, "pad"); box.prop(cap, "damage")
+
+class TR7AE_PT_HCapsuleMeshInfo(bpy.types.Panel):
+    bl_label = "HCapsule"
+    bl_idname = "TR7AE_PT_HCapsuleMeshInfo"
     bl_parent_id = "TR7AE_PT_Tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -3231,44 +3642,42 @@ class TR7AE_PT_HCapsuleInfo(Panel):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-
-        if not obj:
-            return False
-
-        if obj.type == 'ARMATURE' and context.mode == 'POSE':
-            bone = context.active_pose_bone
-            if bone:
-                h = bone.tr7ae_hbox
-                return any(getattr(h, key) != 0 for key in ("x", "y", "z"))
-
-        if obj.type == 'MESH' and obj.get("tr7ae_type") == "HCapsule":
-            return True
-
-        return False
+        return obj and obj.type == 'MESH' and obj.get("tr7ae_type") == "HCapsule"
 
     def draw(self, context):
         layout = self.layout
         obj = context.active_object
 
-        if obj.type == 'ARMATURE' and context.active_pose_bone:
-            capsule = context.active_pose_bone.tr7ae_hcapsule
-        elif obj.type == 'MESH' and obj.get("tr7ae_type") == "HCapsule":
-            i = obj.get("tr7ae_bone_index")
-            arm = obj.find_armature()
-            if not arm:
-                layout.label(text="No armature found.")
-                return
-            bone = arm.pose.bones.get(f"Bone_{i}")
-            if not bone:
-                layout.label(text=f"No Bone_{i} found.")
-                return
-            capsule = bone.tr7ae_hcapsule
-        else:
-            layout.label(text="No valid HBox found.")
+        # 1) Get bone index
+        bone_index = obj.get("tr7ae_bone_index")
+        if bone_index is None:
+            layout.label(text="Missing tr7ae_bone_index")
             return
 
-        for prop_name in TR7AE_HBoxInfo.__annotations__.keys():
-            layout.prop(capsule, prop_name)
+        # 2) Find armature & pose‐bone
+        arm = obj.find_armature()
+        if not arm:
+            layout.label(text="No armature found.")
+            return
+        bone = arm.pose.bones.get(f"Bone_{bone_index}")
+        if not bone or not bone.tr7ae_hcapsules:
+            layout.label(text=f"No HCapsules for Bone_{bone_index}")
+            return
+
+        # 3) Parse capsule index from name: HCapsule_<bone>_<idx>
+        try:
+            cap_idx = int(obj.name.split("_")[-1])
+        except:
+            cap_idx = 0
+        cap = bone.tr7ae_hcapsules[cap_idx]
+
+        # 4) Draw exactly the same props as in the HCapsule bone‐panel
+        layout.prop(cap, "posx");  layout.prop(cap, "posy");  layout.prop(cap, "posz");  layout.prop(cap, "posw")
+        layout.prop(cap, "quatx"); layout.prop(cap, "quaty"); layout.prop(cap, "quatz"); layout.prop(cap, "quatw")
+        layout.prop(cap, "flags");  layout.prop(cap, "id");    layout.prop(cap, "rank")
+        layout.prop(cap, "radius"); layout.prop(cap, "length");layout.prop(cap, "mass")
+        layout.prop(cap, "buoyancy_factor"); layout.prop(cap, "explosion_factor")
+        layout.prop(cap, "material_type");  layout.prop(cap, "pad");  layout.prop(cap, "damage")
 
 class TR7AE_PT_MarkersInfo(bpy.types.Panel):
     bl_label = "HMarkers"
@@ -3373,7 +3782,16 @@ class TR7AE_PT_HMarkerMeshInfo(bpy.types.Panel):
         layout.prop(marker, "ry", text="Y")
         layout.prop(marker, "rz", text="Z")
 
+class TR7AE_OT_ToggleSphere(bpy.types.Operator):
+    bl_idname = "tr7ae.toggle_sphere"
+    bl_label = "Toggle HSphere Section"
 
+    sphere_key: bpy.props.StringProperty()
+
+    def execute(self, context):
+        expand = TR7AE_PT_Tools._sphere_expand
+        expand[self.sphere_key] = not expand.get(self.sphere_key, False)
+        return {'FINISHED'}
 
 class TR7AE_OT_ToggleMarker(bpy.types.Operator):
     bl_idname = "tr7ae.toggle_marker"
@@ -3496,9 +3914,17 @@ class TR7AE_PT_MaterialPanel(Panel):
 
         layout.prop(mat, "tr7ae_texture_id")
         layout.prop(mat, "tr7ae_blend_value")
-        layout.prop(mat, "tr7ae_single_sided")
         layout.prop(mat, "tr7ae_unknown_1")
         layout.prop(mat, "tr7ae_unknown_2")
+        layout.prop(mat, "tr7ae_single_sided")
+        layout.prop(mat, "tr7ae_texture_wrap")
+        layout.prop(mat, "tr7ae_unknown_3")
+        layout.prop(mat, "tr7ae_unknown_4")
+        layout.prop(mat, "tr7ae_flat_shading")
+        layout.prop(mat, "tr7ae_sort_z")
+        layout.prop(mat, "tr7ae_stencil_pass")
+        layout.prop(mat, "tr7ae_stencil_func")
+        layout.prop(mat, "tr7ae_alpha_ref")
 
 def on_blend_value_changed(self, context):
     mat = self
@@ -3882,15 +4308,15 @@ def register_material_properties():
         default=0,
         update=on_blend_value_changed
     )
-    bpy.types.Material.tr7ae_is_envmapped = bpy.props.BoolProperty(
-        name="Environment Mapping",
-        description="Whether this material uses environment mapping",
-        default=False
+    bpy.types.Material.tr7ae_unknown_1 = IntProperty(
+        name="Unknown 1",
+        description="Unknown 1",
+        default=0
     )
-    bpy.types.Material.tr7ae_is_eyerefenvmapped = bpy.props.BoolProperty(
-        name="Eye Reflection Environment Mapping",
-        description="Whether this material uses eye reflection environment mapping",
-        default=False
+    bpy.types.Material.tr7ae_unknown_2 = IntProperty(
+        name="Unknown 2",
+        description="Unknown 2",
+        default=0
     )
     def get_single_sided(self):
         return self.use_backface_culling
@@ -3904,15 +4330,55 @@ def register_material_properties():
         get=get_single_sided,
         set=set_single_sided
     )
-    bpy.types.Material.tr7ae_unknown_1 = IntProperty(
-        name="Unknown 1",
-        description="Unknown 1",
+    bpy.types.Material.tr7ae_texture_wrap = IntProperty(
+        name="Texture Wrap",
+        description="Texture Wrapping",
         default=0
     )
-    bpy.types.Material.tr7ae_unknown_2 = IntProperty(
-        name="Unknown 2",
-        description="Unknown 2",
+    bpy.types.Material.tr7ae_unknown_3 = IntProperty(
+        name="Unknown 3",
+        description="Unknown 3",
         default=0
+    )
+    bpy.types.Material.tr7ae_unknown_4 = IntProperty(
+        name="Unknown 4",
+        description="Unknown 4",
+        default=0
+    )
+    bpy.types.Material.tr7ae_flat_shading = IntProperty(
+        name="Flat Shading",
+        description="Flat Shading",
+        default=0
+    )
+    bpy.types.Material.tr7ae_sort_z = IntProperty(
+        name="Sort Z",
+        description="Sort Z",
+        default=0
+    )
+    bpy.types.Material.tr7ae_stencil_pass = IntProperty(
+        name="Stencil Pass",
+        description="Stencil Pass",
+        default=0
+    )
+    bpy.types.Material.tr7ae_stencil_func = IntProperty(
+        name="Stencil Func",
+        description="Stencil Func",
+        default=0
+    )
+    bpy.types.Material.tr7ae_alpha_ref = IntProperty(
+        name="Alpha Ref",
+        description="Alpha Ref",
+        default=0
+    )
+    bpy.types.Material.tr7ae_is_envmapped = bpy.props.BoolProperty(
+        name="Environment Mapping",
+        description="Whether this material uses environment mapping",
+        default=False
+    )
+    bpy.types.Material.tr7ae_is_eyerefenvmapped = bpy.props.BoolProperty(
+        name="Eye Reflection Environment Mapping",
+        description="Whether this material uses eye reflection environment mapping",
+        default=False
     )
 
 def register_panel_properties():
@@ -3928,9 +4394,17 @@ def unregister_panel_properties():
 def unregister_material_properties():
     del bpy.types.Material.tr7ae_texture_id
     del bpy.types.Material.tr7ae_blend_value
-    del bpy.types.Material.tr7ae_single_sided
     del bpy.types.Material.tr7ae_unknown_1
     del bpy.types.Material.tr7ae_unknown_2
+    del bpy.types.Material.tr7ae_single_sided
+    del bpy.types.Material.tr7ae_texture_wrap
+    del bpy.types.Material.tr7ae_unknown_3
+    del bpy.types.Material.tr7ae_unknown_4
+    del bpy.types.Material.tr7ae_flat_shading
+    del bpy.types.Material.tr7ae_sort_z
+    del bpy.types.Material.tr7ae_stencil_pass
+    del bpy.types.Material.tr7ae_stencil_func
+    del bpy.types.Material.tr7ae_alpha_ref
 
 def register_envmap_property():
     bpy.types.Mesh.tr7ae_is_envmapped = bpy.props.BoolProperty(
@@ -3962,12 +4436,13 @@ def register_draw_group_property():
 def unregister_draw_group_property():
     del bpy.types.Mesh.tr7ae_draw_group
 
-def tr7ae_sync_handler(scene):
+@persistent
+def tr7ae_sync_handler(depsgraph):
+    scene = bpy.context.scene
     for obj in scene.objects:
         obj_type = obj.get("tr7ae_type")
         bone_index = obj.get("tr7ae_bone_index")
-
-        if obj_type not in {"HSphere", "HBox"} or bone_index is None:
+        if obj_type != "HSphere" or bone_index is None:
             continue
 
         arm = obj.find_armature()
@@ -3978,37 +4453,123 @@ def tr7ae_sync_handler(scene):
         if not pbone:
             continue
 
-        if obj_type == "HSphere":
-            # Convert to bone-local space
-            bone_matrix = arm.matrix_world @ arm.data.bones[pbone.name].matrix_local
-            local_pos = bone_matrix.inverted() @ obj.matrix_world.translation
+        # compute object position in bone-local space
+        bone_matrix = arm.matrix_world @ arm.data.bones[pbone.name].matrix_local
+        local_pos = bone_matrix.inverted() @ obj.matrix_world.translation
 
-            pbone.tr7ae_sphere.x = local_pos.x
-            pbone.tr7ae_sphere.y = local_pos.y
-            pbone.tr7ae_sphere.z = local_pos.z
+        # determine which SphereInfo entry this object corresponds to
+        try:
+            sphere_idx = int(obj.name.split("_")[-1])
+        except:
+            sphere_idx = 0
+        sph = pbone.tr7ae_hspheres[sphere_idx]
 
-            # Reverse scale: sphere radius is 1.0 scaled by 0.01 factor
-            pbone.tr7ae_sphere.radius = obj.scale.x / 0.01
+        # write into that SphereInfo item
+        sph.x      = local_pos.x
+        sph.y      = local_pos.y
+        sph.z      = local_pos.z
+        sph.radius = obj.scale.x / 1
 
-        elif obj_type == "HBox":
-            # Get world-space transform
-            loc = obj.matrix_world.translation
-            rot = obj.matrix_world.to_quaternion()
-            scale = obj.scale
+@persistent
+def sync_hbox_transforms(scene):
+    for obj in scene.objects:
+        if obj.get("tr7ae_type") != "HBox":
+            continue
 
-            pbone.tr7ae_hbox.posx = loc.x * 100
-            pbone.tr7ae_hbox.posy = loc.y * 100
-            pbone.tr7ae_hbox.posz = loc.z * 100
+        arm = obj.find_armature()
+        if not arm:
+            continue
 
-            pbone.tr7ae_hbox.quatx = rot.x
-            pbone.tr7ae_hbox.quaty = rot.y
-            pbone.tr7ae_hbox.quatz = rot.z
-            pbone.tr7ae_hbox.quatw = rot.w
+        bone_index = obj.get("tr7ae_bone_index")
+        if bone_index is None:
+            continue
 
-            pbone.tr7ae_hbox.widthx = scale.x
-            pbone.tr7ae_hbox.widthy = scale.y
-            pbone.tr7ae_hbox.widthz = scale.z
+        bone_name = f"Bone_{bone_index}"
+        pbone    = arm.pose.bones.get(bone_name)
+        if not pbone or not pbone.tr7ae_hboxes:
+            continue
 
+        # parse the box index from the object’s name: HBox_<bone>_<idx>
+        try:
+            box_idx = int(obj.name.split("_")[-1])
+        except:
+            box_idx = 0
+        box = pbone.tr7ae_hboxes[box_idx]  # type: TR7AE_HBoxInfo
+
+        # Build the bone’s rest-space matrix
+        bone_mat = arm.matrix_world @ arm.data.bones[bone_name].matrix_local
+        # Compute the box’s local matrix in bone-space
+        local_mat = bone_mat.inverted() @ obj.matrix_world
+
+        # --- Update position (remember you scaled pos by 100 on import) ---
+        loc = local_mat.to_translation()
+        box.posx = loc.x
+        box.posy = loc.y
+        box.posz = loc.z
+
+        # --- Update half-extents from the object’s scale directly ---
+        box.widthx = obj.scale.x
+        box.widthy = obj.scale.y
+        box.widthz = obj.scale.z
+        # (widthw is rarely used — leave it or set to 0)
+
+        # --- Update orientation quaternion ---
+        quat = local_mat.to_quaternion()
+        box.quatx = quat.x
+        box.quaty = quat.y
+        box.quatz = quat.z
+        box.quatw = quat.w
+
+@persistent
+def sync_hcapsule_transforms(scene):
+    for obj in scene.objects:
+        if obj.get("tr7ae_type") != "HCapsule":
+            continue
+
+        arm = obj.find_armature()
+        if not arm:
+            continue
+
+        bone_index = obj.get("tr7ae_bone_index")
+        if bone_index is None:
+            continue
+
+        bone_name = f"Bone_{bone_index}"
+        pbone = arm.pose.bones.get(bone_name)
+        if not pbone or not pbone.tr7ae_hcapsules:
+            continue
+
+        # extract capsule index from name: HCapsule_<bone>_<idx>
+        try:
+            cap_idx = int(obj.name.split("_")[-1])
+        except:
+            cap_idx = 0
+        cap = pbone.tr7ae_hcapsules[cap_idx]
+
+        # build rest‐space bone matrix
+        bone_mat  = arm.matrix_world @ arm.data.bones[bone_name].matrix_local
+        # compute local transform relative to bone
+        local_mat = bone_mat.inverted() @ obj.matrix_world
+
+        # --- Update position ---
+        loc = local_mat.to_translation()
+        cap.posx = loc.x
+        cap.posy = loc.y
+        cap.posz = loc.z
+
+        # --- Update orientation quaternion ---
+        quat = local_mat.to_quaternion()
+        cap.quatx = quat.x
+        cap.quaty = quat.y
+        cap.quatz = quat.z
+        cap.quatw = quat.w
+
+        # --- Update radius & length from object’s scale ---
+        # (we used scale=(radius, radius, length) on import)
+        cap.radius = obj.scale.x
+        cap.length = obj.scale.z
+
+@persistent
 def sync_hmarker_transforms(scene):
     for obj in scene.objects:
         if obj.get("tr7ae_type") != "HMarker":
@@ -4056,6 +4617,7 @@ def sync_hmarker_transforms(scene):
         marker.ry = rot.y
         marker.rz = rot.z
 
+@persistent
 def sync_model_target_properties(scene):
     for obj in scene.objects:
         if obj.get("tr7ae_type") != "ModelTarget":
@@ -4096,99 +4658,103 @@ def sync_model_target_properties(scene):
 
 
 def register():
+    # Classes registration
+    classes = [
+        TR7AE_SphereInfo, TR7AE_HCapsuleInfo, TR7AE_HBoxInfo, TR7AE_HMarkerInfo,
+        TR7AE_OT_ImportModel, TR7AE_PT_Tools, TR7AE_OT_ToggleHSpheres,
+        TR7AE_OT_ToggleHBoxes, TR7AE_OT_ToggleHMarkers, TR7AE_PT_DrawGroupPanel,
+        TR7AE_PT_ModelDebugProperties, TR7AE_PT_MaterialPanel, TR7AE_PT_SphereInfo,
+        TR7AE_PT_HCapsuleInfo, TR7AE_PT_HBoxInfo, TR7AE_PT_MarkersInfo,
+        TR7AE_OT_NormalizeAndLimitWeights, TR7AE_OT_ToggleMarker,
+        TR7AE_OT_ToggleSphere, TR7AE_OT_ToggleCapsule, TR7AE_OT_ToggleBox,
+        TR7AE_PT_HMarkerMeshInfo, TR7AE_PT_HCapsuleMeshInfo,
+        TR7AE_OT_ExportCustomModel, TR7AE_OT_SnapBoneToHMarker,
+        TR7AE_PT_ClothPanel, TR7AE_ClothSettings, TR7AE_ModelTargetInfo,
+        TR7AE_PT_HSphereMeshInfo, TR7AE_PT_UtilitiesPanel,
+        TR7AE_PT_VisibilityPanel, TR7AE_SectionPaths,
+        TR7AE_PT_FileSectionsPanel
+    ]
 
-    bpy.utils.register_class(TR7AE_SphereInfo)
-    bpy.utils.register_class(TR7AE_HCapsuleInfo)
-    bpy.types.PoseBone.tr7ae_hcapsule = bpy.props.PointerProperty(type=TR7AE_HCapsuleInfo)
-    bpy.types.PoseBone.tr7ae_sphere = bpy.props.PointerProperty(type=TR7AE_SphereInfo)
-    bpy.utils.register_class(TR7AE_HBoxInfo)
-    bpy.types.PoseBone.tr7ae_hbox = bpy.props.PointerProperty(type=TR7AE_HBoxInfo)
-    bpy.utils.register_class(TR7AE_OT_ImportModel)
-    bpy.utils.register_class(TR7AE_PT_Tools)
-    bpy.utils.register_class(TR7AE_OT_ToggleHSpheres)
-    bpy.utils.register_class(TR7AE_OT_ToggleHBoxes)
-    bpy.utils.register_class(TR7AE_OT_ToggleHMarkers)
-    bpy.utils.register_class(TR7AE_PT_DrawGroupPanel)
-    bpy.utils.register_class(TR7AE_PT_ModelDebugProperties)
-    bpy.utils.register_class(TR7AE_PT_MaterialPanel)
-    bpy.utils.register_class(TR7AE_PT_SphereInfo)
-    bpy.utils.register_class(TR7AE_PT_HCapsuleInfo)
-    bpy.utils.register_class(TR7AE_PT_HBoxInfo)
-    bpy.utils.register_class(TR7AE_PT_MarkersInfo)
-    bpy.utils.register_class(TR7AE_OT_NormalizeAndLimitWeights)
-    bpy.utils.register_class(TR7AE_HMarkerInfo)
+    for cls in classes:
+        bpy.utils.register_class(cls)
+
+    # Properties registration
     bpy.types.PoseBone.tr7ae_hmarkers = bpy.props.CollectionProperty(type=TR7AE_HMarkerInfo)
-    bpy.utils.register_class(TR7AE_OT_ToggleMarker)
-    bpy.utils.register_class(TR7AE_PT_HMarkerMeshInfo)
-    bpy.utils.register_class(TR7AE_OT_ExportCustomModel)
-    bpy.utils.register_class(TR7AE_OT_SnapBoneToHMarker)
-    if sync_model_target_properties not in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.append(sync_model_target_properties)
-    bpy.utils.register_class(TR7AE_PT_ClothPanel)
-    bpy.utils.register_class(TR7AE_ClothSettings)
-    bpy.utils.register_class(TR7AE_ModelTargetInfo)
-    bpy.utils.register_class(TR7AE_PT_UtilitiesPanel)
-    bpy.utils.register_class(TR7AE_PT_VisibilityPanel)
-    bpy.utils.register_class(TR7AE_SectionPaths)
+    bpy.types.PoseBone.tr7ae_hcapsules = bpy.props.CollectionProperty(type=TR7AE_HCapsuleInfo)
+    bpy.types.PoseBone.tr7ae_hspheres = bpy.props.CollectionProperty(type=TR7AE_SphereInfo)
+    bpy.types.PoseBone.tr7ae_hboxes = bpy.props.CollectionProperty(type=TR7AE_HBoxInfo)
+
     bpy.types.Object.tr7ae_sections = bpy.props.PointerProperty(type=TR7AE_SectionPaths)
-    bpy.utils.register_class(TR7AE_PT_FileSectionsPanel)
     bpy.types.Object.tr7ae_modeltarget = bpy.props.PointerProperty(type=TR7AE_ModelTargetInfo)
     bpy.types.Object.tr7ae_cloth = bpy.props.PointerProperty(type=TR7AE_ClothSettings)
-    bpy.app.handlers.depsgraph_update_post.append(tr7ae_sync_handler)
-    bpy.app.handlers.depsgraph_update_post.append(sync_hmarker_transforms)
+
     register_envmap_property()
     register_eyerefenvmap_property()
     register_draw_group_property()
     register_material_properties()
     register_panel_properties()
 
-def unregister():
+    # Handlers registration
+    handlers = [
+        tr7ae_sync_handler, sync_model_target_properties,
+        sync_hmarker_transforms, sync_hbox_transforms,
+        sync_hcapsule_transforms
+    ]
 
-    del bpy.types.PoseBone.tr7ae_sphere
-    del bpy.types.PoseBone.tr7ae_hcapsule
-    bpy.utils.unregister_class(TR7AE_SphereInfo)
-    bpy.utils.unregister_class(TR7AE_HCapsuleInfo)
-    bpy.utils.unregister_class(TR7AE_OT_ImportModel)
-    bpy.utils.unregister_class(TR7AE_PT_Tools)
-    bpy.utils.unregister_class(TR7AE_OT_ToggleHSpheres)
-    bpy.utils.unregister_class(TR7AE_OT_ToggleHBoxes)
-    bpy.utils.unregister_class(TR7AE_OT_ToggleHMarkers)
-    bpy.utils.unregister_class(TR7AE_PT_DrawGroupPanel)
-    bpy.utils.unregister_class(TR7AE_PT_ModelDebugProperties)
-    bpy.utils.unregister_class(TR7AE_PT_MaterialPanel)
-    bpy.utils.unregister_class(TR7AE_PT_SphereInfo)
-    bpy.utils.unregister_class(TR7AE_PT_HCapsuleInfo)
-    if sync_model_target_properties in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.remove(sync_model_target_properties)
-    bpy.utils.unregister_class(TR7AE_PT_HBoxInfo)
-    bpy.utils.unregister_class(TR7AE_OT_NormalizeAndLimitWeights)
-    bpy.utils.unregister_class(TR7AE_OT_ExportCustomModel)
-    bpy.utils.unregister_class(TR7AE_PT_MarkersInfo)
-    bpy.utils.unregister_class(TR7AE_OT_ToggleMarker)
-    bpy.utils.unregister_class(TR7AE_PT_UtilitiesPanel)
-    bpy.utils.unregister_class(TR7AE_PT_VisibilityPanel)
-    bpy.utils.unregister_class(TR7AE_PT_HMarkerMeshInfo)
-    bpy.utils.unregister_class(TR7AE_HMarkerInfo)
-    bpy.utils.unregister_class(TR7AE_OT_SnapBoneToHMarker)
-    bpy.utils.unregister_class(TR7AE_PT_ClothPanel)
-    bpy.utils.unregister_class(TR7AE_HBoxInfo)
+    for handler in handlers:
+        if handler not in bpy.app.handlers.depsgraph_update_post:
+            bpy.app.handlers.depsgraph_update_post.append(handler)
+
+
+def unregister():
+    # Remove handlers
+    handlers = [
+        tr7ae_sync_handler, sync_model_target_properties,
+        sync_hmarker_transforms, sync_hbox_transforms,
+        sync_hcapsule_transforms
+    ]
+
+    for handler in handlers:
+        if handler in bpy.app.handlers.depsgraph_update_post:
+            bpy.app.handlers.depsgraph_update_post.remove(handler)
+
+    # Unregister properties
+    del bpy.types.PoseBone.tr7ae_hspheres
+    del bpy.types.PoseBone.tr7ae_hcapsules
+    del bpy.types.PoseBone.tr7ae_hboxes
+    del bpy.types.PoseBone.tr7ae_hmarkers
+
     del bpy.types.Object.tr7ae_sections
-    bpy.utils.unregister_class(TR7AE_SectionPaths)
-    bpy.utils.unregister_class(TR7AE_PT_FileSectionsPanel)
-    if not hasattr(bpy.types.Object, "tr7ae_show_mirror_data"):
-        bpy.types.Object.tr7ae_show_mirror_data = bpy.props.BoolProperty(default=False)
     del bpy.types.Object.tr7ae_modeltarget
-    bpy.utils.unregister_class(TR7AE_ModelTargetInfo)
     del bpy.types.Object.tr7ae_cloth
-    bpy.utils.unregister_class(TR7AE_ClothSettings)
-    if tr7ae_sync_handler in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.remove(tr7ae_sync_handler)
-    if sync_hmarker_transforms in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.remove(sync_hmarker_transforms)
+
     unregister_envmap_property()
     unregister_draw_group_property()
     unregister_material_properties()
     unregister_panel_properties()
+
+    # Classes unregistration (reverse order)
+    classes = [
+        TR7AE_PT_FileSectionsPanel, TR7AE_SectionPaths,
+        TR7AE_PT_VisibilityPanel, TR7AE_PT_UtilitiesPanel,
+        TR7AE_PT_HSphereMeshInfo, TR7AE_ModelTargetInfo,
+        TR7AE_ClothSettings, TR7AE_PT_ClothPanel,
+        TR7AE_OT_SnapBoneToHMarker, TR7AE_PT_HCapsuleMeshInfo,
+        TR7AE_PT_HMarkerMeshInfo, TR7AE_OT_ToggleBox,
+        TR7AE_OT_ToggleCapsule, TR7AE_OT_ToggleSphere,
+        TR7AE_OT_ToggleMarker, TR7AE_PT_MarkersInfo,
+        TR7AE_OT_ExportCustomModel, TR7AE_OT_NormalizeAndLimitWeights,
+        TR7AE_PT_HBoxInfo, TR7AE_PT_HCapsuleInfo,
+        TR7AE_PT_SphereInfo, TR7AE_PT_MaterialPanel,
+        TR7AE_PT_ModelDebugProperties, TR7AE_PT_DrawGroupPanel,
+        TR7AE_OT_ToggleHMarkers, TR7AE_OT_ToggleHBoxes,
+        TR7AE_OT_ToggleHSpheres, TR7AE_PT_Tools,
+        TR7AE_OT_ImportModel, TR7AE_HMarkerInfo,
+        TR7AE_HBoxInfo, TR7AE_HCapsuleInfo, TR7AE_SphereInfo
+    ]
+
+    for cls in classes:
+        bpy.utils.unregister_class(cls)
 
 
 
