@@ -27,7 +27,7 @@ The addon also allows to snap an Armature's first bone's position and rotation d
 
 The addon is currently capable of importing cloth physics data, however nothing is done with that during export. Cloth physics data still has to be properly implemented into the addon. In the future, it will be possible to export cloth data and create new physics bones.
 
-## What's coming
+## What's planned
 
 - Write vertices from face corners instead of actual vertex data. This will fix issues such as UV bleeding when exporting a model with removed double vertices
 - Remove HInfo data from pose bones to write the data exclusively from meshes. This will give the possibility to remove/add HInfo
