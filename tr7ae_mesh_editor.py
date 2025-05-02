@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tomb Raider 7/AE Mesh Editor",
     "author": "Raq",
     "collaborators": "Che, TheIndra, arcusmaximus (arc), DKDave, Joschka, Henry",
-    "version": (1, 1, 0),
+    "version": (1, 1, 2),
     "blender": (4, 2, 3),
     "location": "View3D > Sidebar > TR7AE Tools",
     "description": "Import and export Tomb Raider Legend/Anniversary mesh files.",
@@ -114,7 +114,7 @@ def collect_and_sort_mesh_vertices(armature):
             if len(bone_ids) == 1:
                 single_by_bone[bone_ids[0]].append((mesh, v.index, bone_ids))
             elif len(bone_ids) == 2:
-                two_weight.append((mesh, v.index, bone_ids))
+                two_weight.append((mesh, v.index, bone_ids, bone_weight_pairs))
 
         eval_obj.to_mesh_clear()
 
@@ -132,8 +132,18 @@ def collect_and_sort_mesh_vertices(armature):
             bone_ranges[bone_id] = (cursor, cursor + count - 1)
             cursor += count
 
-    # Sort 2-weight verts by (b0, b1)
-    two_weight_sorted = sorted(two_weight, key=lambda x: tuple(x[2]))
+    def sort_key(item):
+        mesh, v_idx, bone_ids, bone_weights = item
+        b0, b1 = bone_ids
+        w0 = bone_weights[0][1]  # weight of b0
+        q_weight = round(w0 * 15) / 15
+        return (b0, b1, q_weight, mesh.name, v_idx)
+
+    two_weight_sorted = sorted(two_weight, key=sort_key)
+
+    # And strip the weights back out (if needed downstream):
+    two_weight_sorted = [(mesh, v_idx, bone_ids) for mesh, v_idx, bone_ids, _ in two_weight_sorted]
+
 
     # Append them
     sorted_verts.extend(two_weight_sorted)
@@ -141,28 +151,12 @@ def collect_and_sort_mesh_vertices(armature):
     return sorted_verts, bone_ranges
 
 
-def collect_virtsegment_entries(sorted_verts, armature):
-    """
-    Given sorted_verts = [(mesh, orig_idx, [b0])] + [(mesh, orig_idx, [b0, b1])]...
-    returns a list of tuples:
-      (firstIdx, lastIdx, primaryBoneIndex, secondaryBoneIndex, weight)
-    """
-    from collections import defaultdict
-
-    # build bone name→index map
-    bones = armature.data.bones
-    bone_map = {b.name: i for i, b in enumerate(bones)}
-
-    # find where the 1‑weight block ends
-    # we assume your collect_and_sort_mesh_vertices gave you:
-    #   single count = number of entries with len(bone_ids)==1
-    # so:
-    single_count = sum(1 for _, _, ids in sorted_verts if len(ids) == 1)
-
+def collect_virtsegment_entries(sorted_verts, armature, quantize=False, levels=31):
     depsgraph = bpy.context.evaluated_depsgraph_get()
     entries = []
 
-    # we’ll scan the two‑weight region for runs
+    single_count = sum(1 for _, _, ids in sorted_verts if len(ids) == 1)
+
     run_key = None
     run_start = None
 
@@ -170,16 +164,11 @@ def collect_virtsegment_entries(sorted_verts, armature):
         if new_idx < single_count:
             continue
 
-        # fetch the two bone IDs
         b0, b1 = bone_ids
-
-        # evaluate Blender’s weight for the secondary bone:
-        # we need the vertex‐group weight on that original index
         eval_obj = mesh.evaluated_get(depsgraph)
         eval_mesh = eval_obj.to_mesh()
-        # find group index for secondary
+
         vg = mesh.vertex_groups[f"Bone_{b1}"]
-        # search in eval_mesh
         w = 0.0
         for g in eval_mesh.vertices[orig_idx].groups:
             if g.group == vg.index:
@@ -187,17 +176,19 @@ def collect_virtsegment_entries(sorted_verts, armature):
                 break
         eval_obj.to_mesh_clear()
 
-        key = (b0, b1, round(w, 4))  # round to avoid float drift
+        if quantize:
+            w = round(w * levels) / levels
+        else:
+            w = round(w, 4)
 
+        key = (b0, b1, w)
         if key != run_key:
-            # close out previous run
             if run_key is not None:
                 entries.append((run_start, new_idx - 1, *run_key))
             run_key = key
             run_start = new_idx
 
-    # close the final run
-    if run_key is not None:
+    if run_key:
         entries.append((run_start, len(sorted_verts) - 1, *run_key))
 
     return entries
@@ -244,17 +235,15 @@ def collect_structured_hinfo_data(armature):
 
         # ── HBoxes ──
         for h in getattr(pbone, "tr7ae_hboxes", []):
-            if h.widthx == 0.0:
-                continue
             entry.hboxes.append((
-                int(round(h.widthx)),  # scale → int
-                int(round(h.widthy)),
-                int(round(h.widthz)),
-                int(round(h.widthw)),
-                int(round(h.posx)),     # pos → int
-                int(round(h.posy)),
-                int(round(h.posz)),
-                int(round(h.posw)),
+                h.widthx,
+                h.widthy,
+                h.widthz,
+                h.widthw,
+                h.positionx,
+                h.positiony,
+                h.positionz,
+                h.positionw,
                 h.quatx, h.quaty, h.quatz, h.quatw,
                 int(h.flags),
                 int(h.id),
@@ -265,6 +254,7 @@ def collect_structured_hinfo_data(armature):
                 int(h.material_type),
                 int(h.pad),
                 int(h.damage),
+                int(h.pad1),
             ))
 
         # ── HCapsules ──
@@ -347,6 +337,8 @@ class TR7AE_OT_ExportCustomModel(Operator):
 
                 # --- Header Part 2: Start of Model Header ---
                 sorted_verts, bone_vertex_ranges = collect_and_sort_mesh_vertices(armature)
+                if len(sorted_verts) > 21845:
+                    self.report({'WARNING'}, f"Model has {len(sorted_verts)} vertices — game limit is 21845!")
                 collection = bpy.context.view_layer.active_layer_collection.collection
                 mesh_objs = [
                     obj for obj in collection.objects
@@ -356,15 +348,47 @@ class TR7AE_OT_ExportCustomModel(Operator):
                     (mesh.name, orig_idx): i
                     for i, (mesh, orig_idx, _) in enumerate(sorted_verts)
                 }
-                virt_entries = collect_virtsegment_entries(sorted_verts, armature)
-                if len(virt_entries) > 153:
-                    self.report({'WARNING'}, (
-                        "WARNING! Your model contains too many dual-weighted vertices with different bone indices and weight values,\n "
-                        "resulting in a count of "
-                        "virtual Segments higher than 153. This will cause crashes if any of your materials have "
-                        "the \"Flat Shading\" flag enabled.\n\n"
-                        "If you are indeed using that flag, please reduce the count of your dual-weighted vertices."
-                    ))
+                # Step 1: Detect if Flat Shading is used
+                flat_shading_used = False
+                collection = bpy.context.view_layer.active_layer_collection.collection
+                mesh_objs = [
+                    obj for obj in collection.objects
+                    if obj.parent == armature and obj.type == 'MESH'
+                    and not obj.name.lower().startswith("cloth")
+                    and not obj.name.lower().startswith("target")
+                ]
+
+                for mesh_obj in mesh_objs:
+                    if mesh_obj.material_slots:
+                        for slot in mesh_obj.material_slots:
+                            material = slot.material
+                            if material and material.get("tr7ae_flat_shading", 0) == 1:
+                                flat_shading_used = True
+                                break
+                    if flat_shading_used:
+                        break
+
+                # Step 2: Generate virt_entries, quantizing until count <= 153
+                # Step 2: Try without quantization first
+                virt_entries = collect_virtsegment_entries(sorted_verts, armature, quantize=False)
+
+                if flat_shading_used:
+                    if len(virt_entries) > 153:
+                        print("[INFO] Flat Shading detected and model has too many weights — quantizing weights to reduce virtSegments.")
+                        for levels in [31, 15, 7, 3, 1]:
+                            quantized = collect_virtsegment_entries(sorted_verts, armature, quantize=True, levels=levels)
+                            if len(quantized) <= 153:
+                                virt_entries = quantized
+                                break
+                        else:
+                            raise ValueError("Could not reduce virtSegments to 153 or fewer with quantization.")
+                    # else: keep the unquantized result (already valid)
+
+                else:
+                    # Use full precision
+                    virt_entries = collect_virtsegment_entries(sorted_verts, armature, quantize=False)
+
+
                 # Map from vertex index in sorted_verts to final segment index
                 # Maps vertex index in sorted_verts → virtual segment index
                 virt_segment_lookup = {}
@@ -571,7 +595,7 @@ class TR7AE_OT_ExportCustomModel(Operator):
                             mb.write(struct.pack(fmt, *item))
 
                     write_list(hentry.spheres, "<HBBHhhhIHB3B h", hsphere_offset_pos)
-                    write_list(hentry.hboxes, "<4f4f4f hBBH BBBB h", hbox_offset_pos)
+                    write_list(hentry.hboxes, "<4f4f4f hBBH BBBB hI", hbox_offset_pos)
                     write_list(hentry.hmarkers, "<ii6f", hmarker_offset_pos)
                     write_list(hentry.hcapsules, "<4f4f h bb hhhbbbb h ", hcapsule_offset_pos)
 
@@ -1305,17 +1329,17 @@ def create_model_target_visuals(targets, armature_obj):
 class TR7AE_SectionPaths(bpy.types.PropertyGroup):
     main_file_index: bpy.props.IntProperty(
         name="Main Section Index",
-        description="Relocation section index for the main mesh",
+        description="Section index for the main mesh",
         default=0
     )
     extra_file_index: bpy.props.IntProperty(
         name="Extra Data Index",
-        description="Relocation section index for extra data like vertex colors",
+        description="Section index for extra data (vertex colors, eye reflection/environment mapped vertices,\ntargets and markups)",
         default=0
     )
     cloth_file_index: bpy.props.IntProperty(
         name="Cloth Section Index",
-        description="Relocation section index for cloth physics",
+        description="Section index for cloth physics",
         default=0
     )
 
@@ -1383,10 +1407,10 @@ class TR7AE_HBoxInfo(bpy.types.PropertyGroup):
     widthy: bpy.props.FloatProperty(name="Width Y")
     widthz: bpy.props.FloatProperty(name="Width Z")
     widthw: bpy.props.FloatProperty(name="Width W")
-    posx: bpy.props.FloatProperty(name="Pos X")
-    posy: bpy.props.FloatProperty(name="Pos Y")
-    posz: bpy.props.FloatProperty(name="Pos Z")
-    posw: bpy.props.FloatProperty(name="Pos W")
+    positionx: bpy.props.FloatProperty(name="Pos X")
+    positiony: bpy.props.FloatProperty(name="Pos Y")
+    positionz: bpy.props.FloatProperty(name="Pos Z")
+    positionw: bpy.props.FloatProperty(name="Pos W")
     quatx: bpy.props.FloatProperty(name="Quat X")
     quaty: bpy.props.FloatProperty(name="Quat Y")
     quatz: bpy.props.FloatProperty(name="Quat Z")
@@ -1400,6 +1424,7 @@ class TR7AE_HBoxInfo(bpy.types.PropertyGroup):
     material_type: bpy.props.IntProperty(name="Material Type")
     pad: bpy.props.IntProperty(name="Pad")
     damage: bpy.props.IntProperty(name="Damage")
+    pad1: bpy.props.IntProperty(name="Pad1")
 
 class TR7AE_HCapsuleInfo(bpy.types.PropertyGroup):
     posx: bpy.props.FloatProperty(name="Pos X")
@@ -1996,14 +2021,14 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                 # ── Parser section (where you read num_hboxes and hbox_list) ──
                 # … inside your import routine, where you parse hinfo …
 
-                if num_hboxes > 0 and hbox_list:
+                if num_hboxes > 0 and hbox_list != 0:
                     file.seek(hbox_list + section_info_size)
                     boxes = []
                     for _ in range(num_hboxes):
                         # 1) widths
                         wx, wy, wz, ww = struct.unpack("<4f", file.read(16))
                         # 2) positions
-                        px, py, pz, pw = struct.unpack("<4f", file.read(16))
+                        positionx, positiony, positionz, positionw = struct.unpack("<4f", file.read(16))
                         # 3) orientation quaternion
                         qx, qy, qz, qw = struct.unpack("<4f", file.read(16))
                         # 4) integer fields
@@ -2016,16 +2041,18 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                         mat_type = struct.unpack("<B", file.read(1))[0]
                         pad      = struct.unpack("<B", file.read(1))[0]
                         damage   = struct.unpack("<h", file.read(2))[0]
+                        pad1     = struct.unpack("<I", file.read(4))[0]
 
                         boxes.append({
                             "widthx": wx, "widthy": wy, "widthz": wz, "widthw": ww,
-                            "posx": px,   "posy": py,   "posz": pz,   "posw": pw,
+                            "positionx": positionx,   "positiony": positiony,   "positionz": positionz,   "positionw": positionw,
                             "quatx": qx,  "quaty": qy,  "quatz": qz,  "quatw": qw,
                             "flags": flags,     "id": id_,       "rank": rank,
                             "mass": mass,       "buoyancy_factor": buoyancy,
                             "explosion_factor": expl,
                             "material_type": mat_type,
-                            "pad": pad,         "damage": damage
+                            "pad": pad,         "damage": damage,
+                            "pad1": pad1
                         })
                     hinfo["boxes"] = boxes
 
@@ -2344,10 +2371,10 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                         item.widthz = box["widthz"]
                         item.widthw = box["widthw"]
                         # full-position
-                        item.posx   = box["posx"]
-                        item.posy   = box["posy"]
-                        item.posz   = box["posz"]
-                        item.posw   = box["posw"]
+                        item.positionx   = box["positionx"]
+                        item.positiony   = box["positiony"]
+                        item.positionz   = box["positionz"]
+                        item.positionw   = box["positionw"]
                         # orientation
                         item.quatx  = box["quatx"]
                         item.quaty  = box["quaty"]
@@ -2364,6 +2391,7 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                         item.material_type    = box.get("material_type", 0)
                         item.pad              = box.get("pad", 0)
                         item.damage           = box.get("damage", 0)
+                        item.pad1             = box.get("pad1", 0)
 
                 # ── Import HCapsules into the pose-bone custom props ──
                 if "capsules" in hinfo:
@@ -2544,23 +2572,39 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                         box_obj.show_in_front = True
                         box_obj.display_type  = 'WIRE'
 
-                        # scale down by 0.01 × half-extents
+                        # 1) Scale to half-extents
                         box_obj.scale = (
                             box["widthx"],
                             box["widthy"],
                             box["widthz"],
                         )
 
-                        # position it
-                        box_obj.location = bone_matrix @ Vector((
-                            box["posx"] * 100,
-                            box["posy"] * 100,
-                            box["posz"] * 100,
+                        # 2) Compute bone-local → world → HInfo-local position
+                        pos_vec   = Vector((
+                            box["positionx"],
+                            box["positiony"],
+                            box["positionz"],
+                            box.get("positionw", 1.0),
                         ))
+                        bone_mat  = armature_obj.matrix_world @ armature_obj.data.bones[bone_name].matrix_local
+                        world_pos = bone_mat @ pos_vec
+                        box_obj.location = hinfo_obj.matrix_world.inverted() @ world_pos.to_3d()
 
-                        # parent to the single HInfo empty
-                        box_obj.parent      = hinfo_obj
-                        box_obj.parent_type = 'OBJECT'
+                        # 3) Apply the stored quaternion
+                        box_obj.rotation_mode     = 'QUATERNION'
+                        qt = Quaternion((
+                            box["quatw"],
+                            box["quatx"],
+                            box["quaty"],
+                            box["quatz"],
+                        ))
+                        qt.normalize()  # just in case it isn’t already unit-length
+                        box_obj.rotation_quaternion = qt
+
+                        # 4) Parent into the HInfo empty and lock in your local transform
+                        box_obj.parent                  = hinfo_obj
+                        box_obj.parent_type             = 'OBJECT'
+                        box_obj.matrix_parent_inverse.identity()
 
                         # move it into the HInfo collection for neatness
                         if box_obj.name not in hinfo_collection.objects:
@@ -3128,6 +3172,7 @@ class TR7AE_PT_UtilitiesPanel(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'TR7AE'
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -3202,6 +3247,27 @@ class TR7AE_OT_ToggleHSpheres(bpy.types.Operator):
         action = "Hidden" if should_hide else "Shown"
         self.report({'INFO'}, f"{action} {len(hspheres)} HSphere(s)")
         return {'FINISHED'}
+    
+class TR7AE_OT_ToggleHCapsules(bpy.types.Operator):
+    bl_idname = "tr7ae.toggle_hcapsules"
+    bl_label = "Toggle HCapsules Visibility"
+    bl_description = "Hide or show all HCapsules objects in the scene"
+
+    def execute(self, context):
+        hcapsules = [obj for obj in bpy.data.objects if obj.name.startswith("HCapsule_")]
+        if not hcapsules:
+            self.report({'WARNING'}, "No HCapsules found.")
+            return {'CANCELLED'}
+
+        # Determine whether to hide or show based on first HSphere's current state
+        should_hide = not hcapsules[0].hide_get()
+
+        for obj in hcapsules:
+            obj.hide_set(should_hide)
+
+        action = "Hidden" if should_hide else "Shown"
+        self.report({'INFO'}, f"{action} {len(hcapsules)} HCapsules(s)")
+        return {'FINISHED'}
 
 class TR7AE_PT_Tools(Panel):
     bl_label = "Tomb Raider 7/AE Mesh Editor"
@@ -3245,12 +3311,12 @@ class TR7AE_PT_Tools(Panel):
             return
         
 class TR7AE_PT_FileSectionsPanel(bpy.types.Panel):
-    bl_label = "File Section Metadata"
+    bl_label = "File Section Data"
     bl_idname = "TR7AE_PT_file_sections"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'TR7AE Tools'
-    bl_parent_id = "TR7AE_PT_Tools"  # if you already have a main panel
+    bl_category = 'TR7AE'
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -3299,6 +3365,7 @@ class TR7AE_PT_ModelDebugProperties(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'TR7AE'
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -3339,7 +3406,6 @@ class TR7AE_PT_ModelDebugProperties(bpy.types.Panel):
 class TR7AE_PT_DrawGroupPanel(Panel):
     bl_label = "Mesh Info"
     bl_idname = "TR7AE_PT_DrawGroupPanel"
-    bl_parent_id = "TR7AE_PT_Tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'TR7AE'
@@ -3519,10 +3585,10 @@ class TR7AE_PT_HBoxInfo(Panel):
                 sub.prop(box, "widthy")
                 sub.prop(box, "widthz")
                 sub.prop(box, "widthw")
-                sub.prop(box, "posx")
-                sub.prop(box, "posy")
-                sub.prop(box, "posz")
-                sub.prop(box, "posw")
+                sub.prop(box, "positionx")
+                sub.prop(box, "positiony")
+                sub.prop(box, "positionz")
+                sub.prop(box, "positionw")
                 sub.prop(box, "quatx")
                 sub.prop(box, "quaty")
                 sub.prop(box, "quatz")
@@ -3536,6 +3602,7 @@ class TR7AE_PT_HBoxInfo(Panel):
                 sub.prop(box, "material_type")
                 sub.prop(box, "pad")
                 sub.prop(box, "damage")
+                sub.prop(box, "pad1")
             return
 
         # 2) Mesh HBox context
@@ -3560,10 +3627,10 @@ class TR7AE_PT_HBoxInfo(Panel):
             layout.prop(box, "widthy")
             layout.prop(box, "widthz")
             layout.prop(box, "widthw")
-            layout.prop(box, "posx")
-            layout.prop(box, "posy")
-            layout.prop(box, "posz")
-            layout.prop(box, "posw")
+            layout.prop(box, "positionx")
+            layout.prop(box, "positiony")
+            layout.prop(box, "positionz")
+            layout.prop(box, "positionw")
             layout.prop(box, "quatx")
             layout.prop(box, "quaty")
             layout.prop(box, "quatz")
@@ -3577,6 +3644,7 @@ class TR7AE_PT_HBoxInfo(Panel):
             layout.prop(box, "material_type")
             layout.prop(box, "pad")
             layout.prop(box, "damage")
+            layout.prop(box, "pad1")
             return
 
         # fallback
@@ -3861,6 +3929,33 @@ class TR7AE_OT_SnapBoneToHMarker(bpy.types.Operator):
 
         self.report({'INFO'}, f"{first_bone.name} aligned and armature parented to {hmarker.name}")
         return {'FINISHED'}
+    
+class TR7AE_OT_ToggleHInfoVisibility(bpy.types.Operator):
+    bl_idname = "tr7ae.toggle_hinfo_visibility"
+    bl_label = "Toggle HInfo Visibility"
+    bl_description = "Toggle visibility of all HInfo components (HSpheres, HBoxes, HCapsules, HMarkers)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        # Find all HInfo objects
+        hinfo_objects = [
+            obj for obj in bpy.data.objects
+            if obj.name.startswith(("HSphere_", "HBox_", "HCapsule_", "HMarker_"))
+        ]
+
+        if not hinfo_objects:
+            self.report({'WARNING'}, "No HInfo objects found.")
+            return {'CANCELLED'}
+
+        # Determine target visibility by inspecting current state
+        any_visible = any(not obj.hide_viewport for obj in hinfo_objects)
+        new_state = True if any_visible else False
+
+        for obj in hinfo_objects:
+            obj.hide_viewport = new_state
+            obj.hide_render = new_state
+
+        return {'FINISHED'}
 
 class TR7AE_PT_VisibilityPanel(bpy.types.Panel):
     bl_label = "Visibility"
@@ -3884,6 +3979,8 @@ class TR7AE_PT_VisibilityPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
 
+        layout.operator("tr7ae.toggle_hinfo_visibility", icon="HIDE_OFF")
+
         hsphere_exists = any(obj.name.startswith("HSphere_") for obj in bpy.data.objects)
         if hsphere_exists:
             layout.operator("tr7ae.toggle_hspheres", icon='RESTRICT_VIEW_OFF')
@@ -3895,6 +3992,10 @@ class TR7AE_PT_VisibilityPanel(bpy.types.Panel):
         hbox_exists = any(obj.name.startswith("HBox_") for obj in bpy.data.objects)
         if hbox_exists:
             layout.operator("tr7ae.toggle_hboxes", icon='RESTRICT_VIEW_OFF')
+
+        hcapsule_exists = any(obj.name.startswith("HCapsule_") for obj in bpy.data.objects)
+        if hcapsule_exists:
+            layout.operator("tr7ae.toggle_hcapsules", icon='RESTRICT_VIEW_OFF')
 
 class TR7AE_PT_MaterialPanel(Panel):
     bl_label = "Material Info"
@@ -4300,20 +4401,26 @@ def register_material_properties():
     bpy.types.Material.tr7ae_texture_id = IntProperty(
         name="Texture ID",
         description="ID of the texture to apply",
+        min=0,
+        max=8191,
         default=0
     )
     bpy.types.Material.tr7ae_blend_value = IntProperty(
         name="Blend Value",
         description="Blending mode used by the mesh",
+        min=0,
+        max=15,
         default=0,
         update=on_blend_value_changed
     )
     bpy.types.Material.tr7ae_unknown_1 = IntProperty(
         name="Unknown 1",
         description="Unknown 1",
+        min=0,
+        max=7,
         default=0
     )
-    bpy.types.Material.tr7ae_unknown_2 = IntProperty(
+    bpy.types.Material.tr7ae_unknown_2 = bpy.props.BoolProperty(
         name="Unknown 2",
         description="Unknown 2",
         default=0
@@ -4333,24 +4440,26 @@ def register_material_properties():
     bpy.types.Material.tr7ae_texture_wrap = IntProperty(
         name="Texture Wrap",
         description="Texture Wrapping",
+        min=0,
+        max=3,
         default=0
     )
-    bpy.types.Material.tr7ae_unknown_3 = IntProperty(
+    bpy.types.Material.tr7ae_unknown_3 = bpy.props.BoolProperty(
         name="Unknown 3",
         description="Unknown 3",
         default=0
     )
-    bpy.types.Material.tr7ae_unknown_4 = IntProperty(
+    bpy.types.Material.tr7ae_unknown_4 = bpy.props.BoolProperty(
         name="Unknown 4",
         description="Unknown 4",
         default=0
     )
-    bpy.types.Material.tr7ae_flat_shading = IntProperty(
+    bpy.types.Material.tr7ae_flat_shading = bpy.props.BoolProperty(
         name="Flat Shading",
-        description="Flat Shading",
+        description="Stops the mesh from reacting to light in any way",
         default=0
     )
-    bpy.types.Material.tr7ae_sort_z = IntProperty(
+    bpy.types.Material.tr7ae_sort_z = bpy.props.BoolProperty(
         name="Sort Z",
         description="Sort Z",
         default=0
@@ -4358,14 +4467,16 @@ def register_material_properties():
     bpy.types.Material.tr7ae_stencil_pass = IntProperty(
         name="Stencil Pass",
         description="Stencil Pass",
+        min=0,
+        max=3,
         default=0
     )
-    bpy.types.Material.tr7ae_stencil_func = IntProperty(
+    bpy.types.Material.tr7ae_stencil_func = bpy.props.BoolProperty(
         name="Stencil Func",
         description="Stencil Func",
         default=0
     )
-    bpy.types.Material.tr7ae_alpha_ref = IntProperty(
+    bpy.types.Material.tr7ae_alpha_ref = bpy.props.BoolProperty(
         name="Alpha Ref",
         description="Alpha Ref",
         default=0
@@ -4429,7 +4540,7 @@ def unregister_eyerefenvmap_property():
 def register_draw_group_property():
     bpy.types.Mesh.tr7ae_draw_group = IntProperty(
         name="Draw Group",
-        description="Declares wether the mesh only renders under certain situations.\n0= Mesh is always rendered",
+        description="Declares wether the mesh only renders under certain situations.\n0 = Mesh is always rendered",
         default=0
     )
 
@@ -4503,9 +4614,9 @@ def sync_hbox_transforms(scene):
 
         # --- Update position (remember you scaled pos by 100 on import) ---
         loc = local_mat.to_translation()
-        box.posx = loc.x
-        box.posy = loc.y
-        box.posz = loc.z
+        box.positionx = loc.x
+        box.positiony = loc.y
+        box.positionz = loc.z
 
         # --- Update half-extents from the object’s scale directly ---
         box.widthx = obj.scale.x
@@ -4667,11 +4778,11 @@ def register():
         TR7AE_PT_HCapsuleInfo, TR7AE_PT_HBoxInfo, TR7AE_PT_MarkersInfo,
         TR7AE_OT_NormalizeAndLimitWeights, TR7AE_OT_ToggleMarker,
         TR7AE_OT_ToggleSphere, TR7AE_OT_ToggleCapsule, TR7AE_OT_ToggleBox,
-        TR7AE_PT_HMarkerMeshInfo, TR7AE_PT_HCapsuleMeshInfo,
+        TR7AE_PT_HMarkerMeshInfo, TR7AE_PT_HCapsuleMeshInfo, TR7AE_OT_ToggleHCapsules,
         TR7AE_OT_ExportCustomModel, TR7AE_OT_SnapBoneToHMarker,
         TR7AE_PT_ClothPanel, TR7AE_ClothSettings, TR7AE_ModelTargetInfo,
         TR7AE_PT_HSphereMeshInfo, TR7AE_PT_UtilitiesPanel,
-        TR7AE_PT_VisibilityPanel, TR7AE_SectionPaths,
+        TR7AE_PT_VisibilityPanel, TR7AE_SectionPaths, TR7AE_OT_ToggleHInfoVisibility,
         TR7AE_PT_FileSectionsPanel
     ]
 
@@ -4748,15 +4859,13 @@ def unregister():
         TR7AE_PT_SphereInfo, TR7AE_PT_MaterialPanel,
         TR7AE_PT_ModelDebugProperties, TR7AE_PT_DrawGroupPanel,
         TR7AE_OT_ToggleHMarkers, TR7AE_OT_ToggleHBoxes,
-        TR7AE_OT_ToggleHSpheres, TR7AE_PT_Tools,
-        TR7AE_OT_ImportModel, TR7AE_HMarkerInfo,
+        TR7AE_OT_ToggleHSpheres, TR7AE_PT_Tools, TR7AE_OT_ToggleHCapsules,
+        TR7AE_OT_ImportModel, TR7AE_HMarkerInfo, TR7AE_OT_ToggleHInfoVisibility,
         TR7AE_HBoxInfo, TR7AE_HCapsuleInfo, TR7AE_SphereInfo
     ]
 
     for cls in classes:
         bpy.utils.unregister_class(cls)
-
-
 
 if __name__ == "__main__":
     register()
