@@ -33,7 +33,7 @@ The addon is currently capable of importing cloth physics data, however nothing 
 - Add/Remove HInfo components
 - Write Markups
 - Cloth export
-- Texture conversion to .pcd via drag-and-drop on Blender viewport
+- Texture conversion to .pcd
 
 ## Known limits
 
