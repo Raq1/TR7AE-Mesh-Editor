@@ -14,7 +14,7 @@ In comparision to the Noesis plugin I previously made 3 years ago, this Blender 
 - Environment Mapping and Eye Reflection Environment Mapping import/export, to create meshes with reflection
 - File size of exported models is now significantly reduced thanks to a more optimized way of storing weights
 - Material and texture import, including live editing Blending mode
-- Target and Markup import/export
+- Target and Markup import/ Target export
 - Adding HInfo Components to bones
 - PCD > DDS, Image > PCD conversion
 
