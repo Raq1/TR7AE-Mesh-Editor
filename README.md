@@ -15,6 +15,8 @@ In comparision to the Noesis plugin I previously made 3 years ago, this Blender 
 - File size of exported models is now significantly reduced thanks to a more optimized way of storing weights
 - Material and texture import, including live editing Blending mode
 - Target and Markup import/export
+- Adding HInfo Components to bones
+- PCD > DDS, Image > PCD conversion
 
 (Example of vertex colors import and export)
 ![image](https://github.com/user-attachments/assets/d091a715-27c8-499d-a7cd-52276eb7cd7a)
@@ -30,10 +32,8 @@ The addon is currently capable of importing cloth physics data, however nothing 
 ## What's planned
 
 - Write vertices from face corners instead of actual vertex data. This will fix issues such as UV bleeding when exporting a model with removed double vertices
-- Add/Remove HInfo components
 - Write Markups
 - Cloth export
-- Texture conversion to .pcd
 
 ## Known limits
 
