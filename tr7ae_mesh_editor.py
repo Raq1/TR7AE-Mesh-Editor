@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tomb Raider 7/AE Mesh Editor",
     "author": "Raq",
     "collaborators": "Che, TheIndra, arcusmaximus (arc), DKDave, Joschka, Henry",
-    "version": (1, 1, 2),
+    "version": (1, 1, 5),
     "blender": (4, 2, 3),
     "location": "View3D > Sidebar > TR7AE Tools",
     "description": "Import and export Tomb Raider Legend/Anniversary mesh files.",
@@ -21,7 +21,66 @@ from typing import List
 from bpy.types import Operator, Panel
 from bpy.props import StringProperty
 from mathutils import Matrix
+import tempfile
 from bpy.app.handlers import persistent
+from bpy.types import Operator, OperatorFileListElement, AddonPreferences
+from bpy.props import IntProperty, FloatVectorProperty, CollectionProperty, PointerProperty
+from bpy.props import StringProperty, CollectionProperty
+import os
+import subprocess
+import bmesh
+
+def convert_dds_to_pcd(dds_path, output_pcd_path):
+    dds_path = Path(dds_path)
+    with open(dds_path, "rb") as f:
+        header = f.read(128)
+        if header[:4] != b'DDS ':
+            raise ValueError("Invalid DDS file")
+
+        height = struct.unpack_from("<I", header, 12)[0]
+        width = struct.unpack_from("<I", header, 16)[0]
+        mipmaps = struct.unpack_from("<I", header, 28)[0]
+        fourcc = header[84:88]
+        dxt_data = f.read()
+
+    format_bytes = struct.unpack("<I", fourcc)[0]
+
+    # Compute texture ID from filename (assumes format INDEX_ID.dds)
+    try:
+        texture_name = dds_path.stem  # '243_1c'
+        texture_id_hex = texture_name.split('_')[1]  # '1c'
+        texture_id = int(texture_id_hex, 16)
+    except Exception:
+        raise ValueError("Failed to parse texture ID from filename. Use format INDEX_ID.dds")
+
+    total_data_size = 24 + len(dxt_data)  # Correct total data size
+
+    magic = 0x39444350  # 'PCD9'
+    pcd_header = struct.pack(
+        "<I i I I H H B B H",
+        magic,
+        format_bytes,         # DDS type (from FourCC)
+        len(dxt_data),        # bitmap size
+        0,                    # unknown
+        width,
+        height,
+        0,                    # unknown
+        mipmaps - 1,
+        3                     # unknown
+    )
+
+    with open(output_pcd_path, "wb") as out:
+        # Write SECT header (24 bytes)
+        out.write(struct.pack("<4sI", b'SECT', total_data_size))  # Magic + total size
+        out.write(struct.pack("<B", 5))  # Type
+        out.write(b"\x00" * 7)  # Reserved
+        out.write(struct.pack("<I", texture_id))  # Texture ID
+        out.write(struct.pack("<I", 0xFFFFFFFF))  # SpecMask
+
+        # Write the .PCD block
+        out.write(pcd_header)
+        out.write(dxt_data)      # Only the raw texture data, excluding FourCC again
+
 
 def find_closest_group_id(color):
     """
@@ -53,7 +112,7 @@ bpy.types.Object.tr7ae_model_scale = bpy.props.FloatVectorProperty(
     name="Model Scale",
     size=3,
     subtype='XYZ',
-    description="Model Scale floats importer from the file.\nDo NOT tweak these scale values unless you really know what you're doing"
+    description="Model Scale imported from the file.\n\nBecause the format stores vertex positions in shorts,\nthey are scaled using these fields to make sure the data\nfits within what can be stored in a signed short.\n\nIf your model is relatively big compared to the original,\nyou need to use bigger scale values\nfor your model to write correctly, without looking ""squished"".\n\nIf your model is relatively small compared to the original,\nyou can use smaller scale values\nfor more accurate vertex positions.\n\nIf unsure, simply leave this field default, and make sure\nyour model fits the proportions of the original"
 )
 
 def collect_model_targets():
@@ -76,8 +135,6 @@ def collect_and_sort_mesh_vertices(armature):
     # 1) Gather all “Mesh_*” children
     meshes = [obj for obj in armature.children
             if obj.type == 'MESH'
-            and not obj.name.lower().startswith("cloth")
-            and not obj.name.lower().startswith("target")
             and not obj.get("tr7ae_is_mface")]
     if not meshes:
         return [], {}
@@ -240,10 +297,10 @@ def collect_structured_hinfo_data(armature):
                 h.widthy,
                 h.widthz,
                 h.widthw,
-                h.positionx,
-                h.positiony,
-                h.positionz,
-                h.positionw,
+                h.positionboxx,
+                h.positionboxy,
+                h.positionboxz,
+                h.positionboxw,
                 h.quatx, h.quaty, h.quatz, h.quatw,
                 int(h.flags),
                 int(h.id),
@@ -342,7 +399,7 @@ class TR7AE_OT_ExportCustomModel(Operator):
                 collection = bpy.context.view_layer.active_layer_collection.collection
                 mesh_objs = [
                     obj for obj in collection.objects
-                    if obj.parent == armature and obj.type == 'MESH' and not obj.name.lower().startswith("cloth") and not obj.name.lower().startswith("target")
+                    if obj.parent == armature and obj.type == 'MESH'
                 ]
                 vertex_index_map = {
                     (mesh.name, orig_idx): i
@@ -354,8 +411,6 @@ class TR7AE_OT_ExportCustomModel(Operator):
                 mesh_objs = [
                     obj for obj in collection.objects
                     if obj.parent == armature and obj.type == 'MESH'
-                    and not obj.name.lower().startswith("cloth")
-                    and not obj.name.lower().startswith("target")
                 ]
 
                 for mesh_obj in mesh_objs:
@@ -369,7 +424,6 @@ class TR7AE_OT_ExportCustomModel(Operator):
                         break
 
                 # Step 2: Generate virt_entries, quantizing until count <= 153
-                # Step 2: Try without quantization first
                 virt_entries = collect_virtsegment_entries(sorted_verts, armature, quantize=False)
 
                 if flat_shading_used:
@@ -389,7 +443,6 @@ class TR7AE_OT_ExportCustomModel(Operator):
                     virt_entries = collect_virtsegment_entries(sorted_verts, armature, quantize=False)
 
 
-                # Map from vertex index in sorted_verts to final segment index
                 # Maps vertex index in sorted_verts → virtual segment index
                 virt_segment_lookup = {}
 
@@ -1300,13 +1353,21 @@ def create_model_target_visuals(targets, armature_obj):
 
         # Final transform relative to bone
         # Parent to bone directly
-        torus.parent = armature_obj
-        torus.parent_type = 'BONE'
-        torus.parent_bone = bone_name
+        # Compute bone rest matrix
+        bone_mat = armature_obj.matrix_world @ armature_obj.data.bones[bone_name].matrix_local
 
-        # Set transform = relative to bone
-        torus.location = (px, py, pz)
-        torus.rotation_euler = (rx, ry, rz)
+        # Build local matrix from position and rotation
+        local_mat = Matrix.Translation(Vector((px, py, pz))) @ Euler((rx, ry, rz), 'XYZ').to_matrix().to_4x4()
+
+        # World transform = bone rest matrix * local offset
+        world_mat = bone_mat @ local_mat
+
+        # Apply local transform relative to "Targets" empty
+        torus.matrix_world = target_parent.matrix_world.inverted() @ world_mat
+
+        # Parent to Targets empty
+        torus.parent = target_parent
+        torus.matrix_parent_inverse.identity()
 
         flag_set = {f"{1<<i:#x}" for i in range(32) if target["flags"] & (1 << i)}
         torus.tr7ae_modeltarget.flags = flag_set
@@ -1407,10 +1468,10 @@ class TR7AE_HBoxInfo(bpy.types.PropertyGroup):
     widthy: bpy.props.FloatProperty(name="Width Y")
     widthz: bpy.props.FloatProperty(name="Width Z")
     widthw: bpy.props.FloatProperty(name="Width W")
-    positionx: bpy.props.FloatProperty(name="Pos X")
-    positiony: bpy.props.FloatProperty(name="Pos Y")
-    positionz: bpy.props.FloatProperty(name="Pos Z")
-    positionw: bpy.props.FloatProperty(name="Pos W")
+    positionboxx: bpy.props.FloatProperty(name="Pos X")
+    positionboxy: bpy.props.FloatProperty(name="Pos Y")
+    positionboxz: bpy.props.FloatProperty(name="Pos Z")
+    positionboxw: bpy.props.FloatProperty(name="Pos W")
     quatx: bpy.props.FloatProperty(name="Quat X")
     quaty: bpy.props.FloatProperty(name="Quat Y")
     quatz: bpy.props.FloatProperty(name="Quat Z")
@@ -1453,8 +1514,15 @@ class TR7AE_ClothSettings(bpy.types.PropertyGroup):
     wind_response: bpy.props.FloatProperty(name="Wind Response", precision=2)
     flags: bpy.props.IntProperty(name="Flags")
 
+class ClothJointMapData(bpy.types.PropertyGroup):
+    segment: bpy.props.IntProperty(name="Segment")
+    flags: bpy.props.IntProperty(name="Flags")
+    axis: bpy.props.IntProperty(name="Axis")
+    joint_order: bpy.props.IntProperty(name="Joint Order")
+    center: bpy.props.IntProperty(name="Center Index")
+    points: bpy.props.IntVectorProperty(name="Connected Points", size=4)
+    bounds: bpy.props.FloatVectorProperty(name="Bounds", size=6)
 
-import struct
 import struct
 
 def ushort_to_float(u):
@@ -1576,14 +1644,24 @@ def try_import_cloth(filepath, armature_obj):
 
             return cloth_points, joint_maps, dist_rules, gravity, drag, wind_response, flags
 
-
     def create_clothpoint_mesh(cloth_points, joint_maps, dist_rules, armature_obj):
-        # Remove existing ClothPoints mesh if it exists
-        for obj in bpy.data.objects:
+        from mathutils import Vector
+        import bpy
+
+        # Remove existing Cloth mesh and empty
+        for obj in list(bpy.data.objects):
             if obj.name == "Cloth":
                 bpy.data.objects.remove(obj, do_unlink=True)
-                break
 
+        # Create new Cloth parent empty
+        cloth_empty = bpy.data.objects.new("Cloth", None)
+        cloth_empty.empty_display_type = 'SPHERE'
+        cloth_empty.empty_display_size = 0.5
+        bpy.context.collection.objects.link(cloth_empty)
+        cloth_empty.parent = armature_obj
+        cloth_empty.matrix_parent_inverse.identity()
+
+        # Generate cloth points in world space
         verts = []
         for i, pt in enumerate(cloth_points):
             bone_index = pt["segment"]
@@ -1598,6 +1676,27 @@ def try_import_cloth(filepath, armature_obj):
                 world_pos = Vector((0, 0, 0))
             verts.append(world_pos)
 
+            # Create UV sphere if flag == 1
+            if pt["flags"] == 1:
+                bpy.ops.mesh.primitive_uv_sphere_add(radius=20, segments=16, ring_count=8, location=world_pos)
+                sphere_obj = bpy.context.active_object
+                sphere_obj.name = f"ClothCollision_{i}"
+                sphere_obj.parent = cloth_empty
+                sphere_obj.matrix_parent_inverse.identity()
+
+                # Set wireframe + in front
+                sphere_obj.display_type = 'WIRE'
+                sphere_obj.show_in_front = True
+
+                # Add vertex group for bone and assign weight
+                vg = sphere_obj.vertex_groups.new(name=bone_name)
+                vg.add(range(len(sphere_obj.data.vertices)), 1.0, 'REPLACE')
+
+                # Add armature modifier
+                arm_mod = sphere_obj.modifiers.new(name="Armature", type='ARMATURE')
+                arm_mod.object = armature_obj
+
+        # Create edges
         edges = []
         for jm in joint_maps:
             a, b = jm["points"][0], jm["points"][1]
@@ -1608,24 +1707,39 @@ def try_import_cloth(filepath, armature_obj):
             if a < len(verts) and b < len(verts) and a != b:
                 edges.append((a, b))
 
-        mesh = bpy.data.meshes.new("Cloth")
+        # Create mesh and object
+        mesh = bpy.data.meshes.new("ClothStrip")
         mesh.from_pydata(verts, edges, [])
         mesh.update()
 
-        obj = bpy.data.objects.new("Cloth", mesh)
-        # Assign cloth settings as custom properties
-        obj.tr7ae_cloth.gravity = gravity
-        obj.tr7ae_cloth.drag = drag
-        obj.tr7ae_cloth.wind_response = wind_response
-        obj.tr7ae_cloth.flags = flags
+        obj = bpy.data.objects.new("ClothStrip", mesh)
         obj.display_type = 'WIRE'
         obj.show_wire = True
         bpy.context.collection.objects.link(obj)
 
-        obj.parent = armature_obj
+        # Clear previous data
+        if hasattr(obj, "cloth_points"):
+            obj.cloth_points.clear()
+
+        for pt in cloth_points:
+            item = obj.cloth_points.add()
+            item.segment = pt["segment"]
+            item.flags = pt["flags"]
+            item.joint_order = pt["joint_order"]
+            item.up_to = pt["up_to"]
+            item.pos = pt["pos"]
+
+        # Assign cloth data to the mesh object
+        obj.tr7ae_cloth.gravity = gravity
+        obj.tr7ae_cloth.drag = drag
+        obj.tr7ae_cloth.wind_response = wind_response
+        obj.tr7ae_cloth.flags = flags
+
+        # Parent to the new Cloth empty
+        obj.parent = cloth_empty
         obj.matrix_parent_inverse.identity()
 
-        # 🧬 Skin to bones
+        # Skin to bones
         bone_groups = {}
         for pt in cloth_points:
             bone_index = pt["segment"]
@@ -1639,15 +1753,40 @@ def try_import_cloth(filepath, armature_obj):
             if bone_name in bone_groups:
                 bone_groups[bone_name].add([i], 1.0, 'REPLACE')
 
+        # Add armature modifier
         arm_mod = obj.modifiers.new(name="Armature", type='ARMATURE')
         arm_mod.object = armature_obj
+        obj["cloth_points"] = [pt.copy() for pt in cloth_points]
+        if hasattr(obj, "tr7ae_distrules"):
+            obj.tr7ae_distrules.clear()
 
-        print(f"[CLOTH] Imported {len(verts)} cloth points, {len(joint_maps)} joint maps, {len(dist_rules)} dist rules with bone skinning.")
+        for rule in dist_rules:
+            item = obj.tr7ae_distrules.add()
+            item.point0 = rule["point0"]
+            item.point1 = rule["point1"]
+            item.flag0 = rule["flag0"]
+            item.flag1 = rule["flag1"]
+            item.min = rule["min"]
+            item.max = rule["max"]
+
+        # Populate joint maps
+        if hasattr(obj, "tr7ae_jointmaps"):
+            obj.tr7ae_jointmaps.clear()
+
+        for jm in joint_maps:
+            item = obj.tr7ae_jointmaps.add()
+            item.segment = jm["segment"]
+            item.flags = jm["flags"]
+            item.axis = jm["axis"]
+            item.joint_order = jm["joint_order"]
+            item.center = jm["center"]
+            item.points = jm["points"]
+            item.bounds = jm["bounds"]
+
+        print(f"[CLOTH] Imported {len(verts)} cloth points, {len(joint_maps)} joint maps, {len(dist_rules)} dist rules with bone skinning and UV spheres for flagged points.")
 
     cloth_points, joint_maps, dist_rules, gravity, drag, wind_response, flags = parse_cloth_points_and_maps(cloth_path)
     create_clothpoint_mesh(cloth_points, joint_maps, dist_rules, armature_obj)
-
-
 
 
 def import_envmapped_vertices(filepath, env_mapped_vertices, num_relocations):
@@ -1795,20 +1934,18 @@ from pathlib import Path
 
 def convert_pcd_to_dds(pcd_path, texture_dir):
     pcd_path = Path(pcd_path)
-    dds_path = Path(texture_dir) / f"{Path(pcd_path).stem}.dds"
+    dds_path = Path(texture_dir) / f"{pcd_path.stem}.dds"
 
     if os.path.exists(dds_path):
         print(f"DDS already exists: {os.path.basename(dds_path)}")
         return dds_path, None
+
     try:
         with open(pcd_path, "rb") as f:
-            # Read DDS format (FourCC) from offset 28
             f.seek(28)
             format_bytes = f.read(4)
             dds_format = struct.unpack('<I', format_bytes)[0]
-            fourcc = struct.pack("<I", dds_format)
 
-            # Now read the real texture header at offset 24
             f.seek(24)
             texture_header = f.read(24)
             (
@@ -1823,38 +1960,51 @@ def convert_pcd_to_dds(pcd_path, texture_dir):
                 _
             ) = struct.unpack("<I i I I H H B B H", texture_header)
 
-            if magic_number != 0x39444350:  # 'PCD9'
+            if magic_number != 0x39444350:
                 raise ValueError(f"Unexpected magic number: {hex(magic_number)}")
 
             f.seek(48)
             dxt_data = f.read(bitmap_size)
 
-            def create_dds_header(width, height, mipmaps, fourcc, dxt_size):
+            def create_dds_header(width, height, mipmaps, dds_format, dxt_size):
                 header = bytearray(128)
                 struct.pack_into('<4sI', header, 0, b'DDS ', 124)
-                struct.pack_into('<I', header, 8, 0x0002100F)
+                struct.pack_into('<I', header, 8, 0x0002100F)  # flags
                 struct.pack_into('<I', header, 12, height)
                 struct.pack_into('<I', header, 16, width)
-                struct.pack_into('<I', header, 20, max(1, dxt_size))
+                struct.pack_into('<I', header, 20, max(1, dxt_size))  # pitch or linear size
                 struct.pack_into('<I', header, 28, mipmaps if mipmaps > 0 else 1)
-                struct.pack_into('<I', header, 76, 32)
-                struct.pack_into('<I', header, 80, 0x00000004)
-                struct.pack_into('<4s', header, 84, fourcc)
-                struct.pack_into('<I', header, 108, 0x1000)
+
+                if dds_format == 21:  # ARGB (uncompressed)
+                    struct.pack_into('<I', header, 76, 32)  # size of pixel format
+                    struct.pack_into('<I', header, 80, 0x00000041)  # flags: RGBA
+                    struct.pack_into('<4s', header, 84, b'\x00\x00\x00\x00')  # no FourCC
+                    struct.pack_into('<I', header, 88, 32)  # RGB Bit Count
+                    struct.pack_into('<I', header, 92, 0x00FF0000)  # R
+                    struct.pack_into('<I', header, 96, 0x0000FF00)  # G
+                    struct.pack_into('<I', header, 100, 0x000000FF) # B
+                    struct.pack_into('<I', header, 104, 0xFF000000) # A
+                else:  # Assume compressed (like DXT1/DXT5)
+                    struct.pack_into('<I', header, 76, 32)
+                    struct.pack_into('<I', header, 80, 0x00000004)  # flags: FourCC
+                    struct.pack_into('<4s', header, 84, struct.pack("<I", dds_format))
+
+                struct.pack_into('<I', header, 108, 0x1000)  # caps
                 return header
 
-            dds_header = create_dds_header(width, height, mipmaps, fourcc, len(dxt_data))
+            dds_header = create_dds_header(width, height, mipmaps, dds_format, len(dxt_data))
 
             with open(dds_path, "wb") as out:
                 out.write(dds_header)
                 out.write(dxt_data)
 
-            print(f" Converted {os.path.basename(pcd_path)} → {os.path.basename(dds_path)} ({width}x{height}, mipmaps: {mipmaps})")
+            print(f"Converted {pcd_path.name} → {dds_path.name} ({width}x{height}, mipmaps: {mipmaps})")
             return dds_path, dds_format
 
     except Exception as e:
         print(f"[ERROR] DDS conversion failed: {e}")
         return None
+
 
 class TR7AE_OT_ImportModel(Operator, ImportHelper):
     bl_idname = "tr7ae.import_model"
@@ -1864,21 +2014,28 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
     filename_ext = ".tr7aemesh"
     filter_glob: StringProperty(default="*.tr7aemesh", options={'HIDDEN'})
 
+    import_textures: bpy.props.BoolProperty(
+        name="Import Textures",
+        description="Import and assign textures",
+        default=True
+    )
+
     import_cloth: bpy.props.BoolProperty(
         name="Import Cloth",
-        description="Import .cloth file if available",
+        description="Import cloth physics",
         default=True
     )
 
     import_hinfo: bpy.props.BoolProperty(
         name="Import HInfo",
-        description="Import hit spheres, boxes, and markers",
+        description="Import HSpheres, HBoxes, HMarkers and HCapsules where applicable",
         default=True
     )
 
 
     def draw(self, context):
         layout = self.layout
+        layout.prop(self, "import_textures")
         layout.prop(self, "import_cloth")
         layout.prop(self, "import_hinfo")
 
@@ -1886,13 +2043,13 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
         filepath = self.filepath
         try:
             with open(filepath, 'rb') as f:
-                self.import_tr7ae(f, context, filepath, self.import_cloth, self.import_hinfo)
+                self.import_tr7ae(f, context, filepath, self.import_cloth, self.import_hinfo, self.import_textures)
         except Exception as e:
             self.report({'ERROR'}, f"Failed to import model: {e}")
             return {'CANCELLED'}
         return {'FINISHED'}
 
-    def import_tr7ae(self, fhandle, context, filepath=None, do_import_cloth=True, do_import_hinfo=True):
+    def import_tr7ae(self, fhandle, context, filepath=None, do_import_cloth=True, do_import_hinfo=True, do_import_textures=True):
         converted_textures = {}  # Avoid converting the same .pcd multiple times
         loaded_images = {}       # Cache for already loaded Blender images
         def read(fmt):
@@ -2028,7 +2185,7 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                         # 1) widths
                         wx, wy, wz, ww = struct.unpack("<4f", file.read(16))
                         # 2) positions
-                        positionx, positiony, positionz, positionw = struct.unpack("<4f", file.read(16))
+                        positionboxx, positionboxy, positionboxz, positionboxw = struct.unpack("<4f", file.read(16))
                         # 3) orientation quaternion
                         qx, qy, qz, qw = struct.unpack("<4f", file.read(16))
                         # 4) integer fields
@@ -2045,7 +2202,7 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
 
                         boxes.append({
                             "widthx": wx, "widthy": wy, "widthz": wz, "widthw": ww,
-                            "positionx": positionx,   "positiony": positiony,   "positionz": positionz,   "positionw": positionw,
+                            "positionboxx": positionboxx,   "positionboxy": positionboxy,   "positionboxz": positionboxz,   "positionboxw": positionboxw,
                             "quatx": qx,  "quaty": qy,  "quatz": qz,  "quatw": qw,
                             "flags": flags,     "id": id_,       "rank": rank,
                             "mass": mass,       "buoyancy_factor": buoyancy,
@@ -2220,11 +2377,11 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
             texture_wrap      = (tpageid >> 22) & 0x3             # bits 22–23 (2 bits)
             unknown_3         = (tpageid >> 24) & 0x1             # bit     24 (1 bit)
             unknown_4         = (tpageid >> 25) & 0x1             # bit     25 (1 bit)
-            flat_shading      = (tpageid >> 26) & 0x1  # ✅
-            sort_z            = (tpageid >> 27) & 0x1  # ✅
-            stencil_pass      = (tpageid >> 28) & 0x3  # ✅ 2 bits
-            stencil_func      = (tpageid >> 30) & 0x1  # ✅
-            alpha_ref         = (tpageid >> 31) & 0x1  # ✅
+            flat_shading      = (tpageid >> 26) & 0x1
+            sort_z            = (tpageid >> 27) & 0x1
+            stencil_pass      = (tpageid >> 28) & 0x3
+            stencil_func      = (tpageid >> 30) & 0x1
+            alpha_ref         = (tpageid >> 31) & 0x1
             fhandle.read(12)
             fhandle.seek(-4, 1)
             next_texture = read("<I")[0]
@@ -2312,6 +2469,10 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                 bone_objects[i].parent = bone_objects[parent_idx]
         bpy.ops.object.mode_set(mode='OBJECT')
 
+        global_marker_index = 0
+        global_sphere_index = 0
+        global_box_index = 0
+        global_capsule_index = 0
         for i, bone in enumerate(bones):
             bone_name = f"Bone_{i}"
             pbone = armature_obj.pose.bones.get(bone_name)
@@ -2371,10 +2532,10 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                         item.widthz = box["widthz"]
                         item.widthw = box["widthw"]
                         # full-position
-                        item.positionx   = box["positionx"]
-                        item.positiony   = box["positiony"]
-                        item.positionz   = box["positionz"]
-                        item.positionw   = box["positionw"]
+                        item.positionboxx   = box["positionboxx"]
+                        item.positionboxy   = box["positionboxy"]
+                        item.positionboxz   = box["positionboxz"]
+                        item.positionboxw   = box["positionboxw"]
                         # orientation
                         item.quatx  = box["quatx"]
                         item.quaty  = box["quaty"]
@@ -2470,16 +2631,17 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                 # Create marker meshes
                 if "markers" in hinfo:
                     for marker in hinfo["markers"]:
-                        marker_name = f"HMarker_{i}_{marker['index']}"
+                        marker_name = f"HMarker_{global_marker_index}"
+                        global_marker_index += 1
                         bone_name = f"Bone_{i}"
 
                         # Create UV sphere mesh
-                        bpy.ops.mesh.primitive_cone_add(radius1=0.02, depth=0.05, vertices=16)
+                        bpy.ops.mesh.primitive_cone_add(radius1=0.02, depth=0.05, vertices=8)
                         marker_obj = bpy.context.active_object
                         marker_obj.name = marker_name
                         marker_obj.scale = (100.0, 100.0, 100.0)
                         marker_obj["tr7ae_type"] = "HMarker"
-                        marker_obj["tr7ae_bone_index"] = i  # ✅ Set the bone index
+                        marker_obj["tr7ae_bone_index"] = i
 
                         # Get the bone's rest matrix (local to armature space)
                         bone_matrix = armature_obj.matrix_world @ armature_obj.data.bones[bone_name].matrix_local
@@ -2516,7 +2678,8 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
 
                 if "spheres" in hinfo:
                     for j, sphere in enumerate(hinfo["spheres"]):
-                        sphere_name = f"HSphere_{i}_{j}"
+                        sphere_name = f"HSphere_{global_sphere_index}"
+                        global_sphere_index += 1
                         bone_name = f"Bone_{i}"
 
                         # Create a unit UV-sphere
@@ -2560,7 +2723,8 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
 
                 if "boxes" in hinfo:
                     for j, box in enumerate(hinfo["boxes"]):
-                        box_name  = f"HBox_{i}_{j}"
+                        box_name  = f"HBox_{global_box_index}"
+                        global_box_index += 1
                         bone_name = f"Bone_{i}"
 
                         # create the cube
@@ -2573,33 +2737,32 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                         box_obj.display_type  = 'WIRE'
 
                         # 1) Scale to half-extents
-                        box_obj.scale = (
-                            box["widthx"],
-                            box["widthy"],
-                            box["widthz"],
-                        )
 
-                        # 2) Compute bone-local → world → HInfo-local position
-                        pos_vec   = Vector((
-                            box["positionx"],
-                            box["positiony"],
-                            box["positionz"],
-                            box.get("positionw", 1.0),
+                        pos_vec = Vector((
+                            box["positionboxx"],
+                            box["positionboxy"],
+                            box["positionboxz"],
                         ))
-                        bone_mat  = armature_obj.matrix_world @ armature_obj.data.bones[bone_name].matrix_local
-                        world_pos = bone_mat @ pos_vec
-                        box_obj.location = hinfo_obj.matrix_world.inverted() @ world_pos.to_3d()
-
-                        # 3) Apply the stored quaternion
-                        box_obj.rotation_mode     = 'QUATERNION'
-                        qt = Quaternion((
+                        quat = Quaternion((
                             box["quatw"],
                             box["quatx"],
                             box["quaty"],
                             box["quatz"],
+                        )).normalized()
+
+                        scale_mat = Matrix.Diagonal((
+                            box["widthx"],
+                            box["widthy"],
+                            box["widthz"],
+                            1.0
                         ))
-                        qt.normalize()  # just in case it isn’t already unit-length
-                        box_obj.rotation_quaternion = qt
+
+                        local_box_mat = Matrix.Translation(pos_vec) @ quat.to_matrix().to_4x4() @ scale_mat
+
+                        # Convert to world and then to HInfo-local space
+                        bone_mat = armature_obj.matrix_world @ armature_obj.data.bones[bone_name].matrix_local
+                        world_box_mat = bone_mat @ local_box_mat
+                        box_obj.matrix_world = hinfo_obj.matrix_world.inverted() @ world_box_mat
 
                         # 4) Parent into the HInfo empty and lock in your local transform
                         box_obj.parent                  = hinfo_obj
@@ -2638,7 +2801,8 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
 
                 if "capsules" in hinfo:
                     for j, cap in enumerate(hinfo["capsules"]):
-                        capsule_name = f"HCapsule_{i}_{j}"
+                        capsule_name = f"HCapsule_{global_capsule_index}"
+                        global_capsule_index += 1
                         bone_name    = f"Bone_{i}"
 
                         # 1) Add a unit cylinder (just like we do a unit sphere for HSpheres)
@@ -2892,32 +3056,35 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
             pcd_path = find_texture_by_id(folder, texture_id)
 
             # Convert or reuse DDS texture
-            dds_key = str(pcd_path)
-            if dds_key in converted_textures:
-                dds_path, dds_format = converted_textures[dds_key]
-            else:
-                result = convert_pcd_to_dds(pcd_path, texture_dir)
-                if result:
-                    dds_path, dds_format = result
-                    converted_textures[dds_key] = (dds_path, dds_format)
+            image = None
+            if do_import_textures:
+                dds_key = str(pcd_path)
+                if dds_key in converted_textures:
+                    dds_path, dds_format = converted_textures[dds_key]
                 else:
-                    dds_path = None
-                    dds_format = None
+                    result = convert_pcd_to_dds(pcd_path, texture_dir)
+                    if result:
+                        dds_path, dds_format = result
+                        converted_textures[dds_key] = (dds_path, dds_format)
+                    else:
+                        dds_path = None
+                        dds_format = None
 
-        # Always get or load the image, even if already converted
-            if str(dds_path) in loaded_images:
-                image = loaded_images[str(dds_path)]
-            elif dds_path.exists():
-                image = bpy.data.images.load(str(dds_path))
-                loaded_images[str(dds_path)] = image
-            else:
-                image = None  # Texture missing
+            # Always get or load the image, even if already converted
+                if str(dds_path) in loaded_images:
+                    image = loaded_images[str(dds_path)]
+                elif dds_path.exists():
+                    image = bpy.data.images.load(str(dds_path))
+                    loaded_images[str(dds_path)] = image
+                    image.pack()
+                else:
+                    image = None  # Texture missing
 
-            # Always assign the image if it exists
-            if image:
-                tex_image.image = image
-            else:
-                print(f"[ERROR] DDS file not found or not written: {dds_path}")
+                # Always assign the image if it exists
+                if image:
+                    tex_image.image = image
+                else:
+                    print(f"[ERROR] DDS file not found or not written: {dds_path}")
 
             # Vertex Color AO via Multiply
             if vertex_colors:
@@ -3309,6 +3476,142 @@ class TR7AE_PT_Tools(Panel):
         bone = context.active_pose_bone
         if not bone:
             return
+    
+def is_image_fully_opaque_blender(image_path):
+    try:
+        img = bpy.data.images.load(str(image_path), check_existing=False)
+        has_alpha = img.channels == 4
+        fully_opaque = True
+
+        if has_alpha:
+            pixels = list(img.pixels)  # RGBA per pixel
+            for i in range(3, len(pixels), 4):
+                if pixels[i] < 0.999:
+                    fully_opaque = False
+                    break
+
+        bpy.data.images.remove(img)
+        return fully_opaque
+    except:
+        return False
+        
+class TR7AE_OT_ConvertImageToPCD(bpy.types.Operator):
+    bl_idname = "tr7ae.convert_image_to_pcd"
+    bl_label = "Convert Image(s) to PCD"
+    bl_description = "Convert DDS, PNG, JPG, TGA or other image formats to PCD\n\nRequires set path to texconv.exe in addon preferences for\nany texture format that isn't DDS"
+
+    files: CollectionProperty(type=OperatorFileListElement)
+    directory: StringProperty(subtype='DIR_PATH')
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.png;*.tga;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.hdr;*.ppm", options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            targets = self.files or [Path(self.filepath).name]
+
+            for f in targets:
+                ext = f.name.lower()
+                full_path = Path(self.directory) / f.name
+                if not full_path.exists():
+                    continue
+
+                if ext.endswith(".dds"):
+                    temp_dds = full_path
+                else:
+                    # Use texconv to convert to DDS
+                    temp_dds = Path(tempfile.gettempdir()) / (full_path.stem + ".dds")
+                    prefs = context.preferences.addons[__name__].preferences
+                    texconv_path = getattr(prefs, 'texconv_path', '') or "texconv.exe"
+                    format = "DXT1" if is_image_fully_opaque_blender(full_path) else "DXT5"
+
+                    result = subprocess.run([
+                        texconv_path,
+                        "-nologo",
+                        "-y",
+                        "-ft", "dds",
+                        "-f", format,
+                        "-o", str(temp_dds.parent),
+                        str(full_path)
+                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+                    if result.returncode != 0 or not temp_dds.exists():
+                        stderr = result.stderr.decode().strip()
+                        stdout = result.stdout.decode().strip()
+                        raise RuntimeError(f"texconv failed:\n{stderr or '(no stderr output)'}\n{stdout or ''}")
+
+                output_pcd_path = full_path.with_suffix(".pcd")
+                convert_dds_to_pcd(temp_dds, output_pcd_path)
+
+            self.report({'INFO'}, "Texture conversion complete.")
+            return {'FINISHED'}
+
+        except Exception as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+    def invoke(self, context, event):
+        self.filter_glob = "*.dds;*.png;*.tga;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.hdr;*.ppm"
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+    
+class TR7AE_OT_ConvertPCDToDDS(Operator):
+    bl_idname = "tr7ae.convert_pcd_to_dds"
+    bl_label = "Convert PCD to DDS"
+    bl_description = "Convert PCD texture files to DDS format"
+
+    files: CollectionProperty(type=OperatorFileListElement)
+    directory: StringProperty(subtype='DIR_PATH')
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.pcd", options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            targets = self.files or [Path(self.filepath).name]
+
+            for f in targets:
+                full_path = Path(self.directory) / f.name
+                if not full_path.exists():
+                    continue
+                output_directory = full_path.parent
+                convert_pcd_to_dds(full_path, output_directory)
+
+            self.report({'INFO'}, "PCD to DDS conversion complete.")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+    def invoke(self, context, event):
+        self.filter_glob = "*.pcd"
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+# Add button to UI panel
+class TR7AE_PT_TextureTools(bpy.types.Panel):
+    bl_label = "Texture Tools"
+    bl_idname = "TR7AE_PT_TextureTools"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'TR7AE'
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("tr7ae.convert_image_to_pcd", text="Convert Image(s) to PCD")
+        layout.operator("tr7ae.convert_pcd_to_dds", text="Convert PCD to DDS")
+
+class TR7AE_Preferences(AddonPreferences):
+    bl_idname = __name__
+
+    texconv_path: StringProperty(
+        name="Path to texconv.exe",
+        description="Location of the texconv executable",
+        subtype='FILE_PATH',
+        default=""
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "texconv_path")
         
 class TR7AE_PT_FileSectionsPanel(bpy.types.Panel):
     bl_label = "File Section Data"
@@ -3346,7 +3649,7 @@ class TR7AE_PT_ClothPanel(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return obj and obj.name == "Cloth"
+        return obj and obj.name == "ClothStrip"
 
     def draw(self, context):
         layout = self.layout
@@ -3400,6 +3703,175 @@ class TR7AE_PT_ModelDebugProperties(bpy.types.Panel):
                     box = layout.box()
                     box.label(text=f"Bone1: {data['bone1']} | Bone2: {data['bone2']} | Count: {data['count']}")
 
+class ClothPointData(bpy.types.PropertyGroup):
+    segment: bpy.props.IntProperty(name="Segment")
+    flags: bpy.props.IntProperty(name="Flags")
+    joint_order: bpy.props.IntProperty(name="Joint Order")
+    up_to: bpy.props.IntProperty(name="Up To")
+    pos: bpy.props.FloatVectorProperty(name="Position", size=3)
+
+# UI panel to display/edit selected vertex's ClothPoint
+class TR7AE_PT_ClothPointInspector(bpy.types.Panel):
+    bl_label = "ClothPoint"
+    bl_idname = "TR7AE_PT_clothpoint_inspector"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'TR7AE'
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        is_mesh = obj and obj.type == 'MESH'
+        has_data = hasattr(obj, "cloth_points") and len(obj.cloth_points) > 0
+        in_edit = context.mode == 'EDIT_MESH'
+        is_vert_mode = context.tool_settings.mesh_select_mode[0]
+
+        return is_mesh and has_data and in_edit and is_vert_mode
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.object
+
+        if context.mode != 'EDIT_MESH':
+            layout.label(text="Enter Edit Mode to inspect vertices.")
+            return
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        selected_verts = [v for v in bm.verts if v.select]
+
+        if not selected_verts:
+            layout.label(text="Select a vertex.")
+            return
+
+        for v in selected_verts:
+            idx = v.index
+            if idx >= len(obj.cloth_points):
+                layout.label(text=f"Vertex {idx} out of range.")
+                continue
+
+            pt = obj.cloth_points[idx]
+            box = layout.box()
+            box.label(text=f"Vertex {idx}")
+            box.prop(pt, "segment")
+            box.prop(pt, "flags")
+            box.prop(pt, "joint_order")
+            box.prop(pt, "up_to")
+            box.prop(pt, "pos")
+
+class TR7AE_PT_ClothJointMapInspector(bpy.types.Panel):
+    bl_label = "ClothJointMap"
+    bl_idname = "TR7AE_PT_clothjointmap_inspector"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'TR7AE'
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return (
+            obj and obj.type == 'MESH'
+            and obj.name == "ClothStrip"
+            and hasattr(obj, "tr7ae_jointmaps")
+            and context.mode == 'EDIT_MESH'
+            and context.tool_settings.mesh_select_mode[0]  # Vertex select mode
+        )
+
+    def draw(self, context):
+        import bmesh
+        layout = self.layout
+        obj = context.object
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        selected_verts = {v.index for v in bm.verts if v.select}
+
+        if not selected_verts:
+            layout.label(text="Select a vertex.")
+            return
+
+        found = False
+        for idx in selected_verts:
+            if idx >= len(obj.cloth_points):
+                continue
+            current_segment = obj.cloth_points[idx].segment
+
+            for jm in obj.tr7ae_jointmaps:
+                if jm.segment != current_segment:
+                    continue
+                if idx not in jm.points:
+                    continue
+
+                box = layout.box()
+                box.label(text=f"JointMap Segment {jm.segment} (Points: {list(jm.points)})")
+                box.prop(jm, "segment")
+                box.prop(jm, "flags")
+                box.prop(jm, "axis")
+                box.prop(jm, "joint_order")
+                box.prop(jm, "center")
+                box.prop(jm, "points")
+                box.prop(jm, "bounds")
+                found = True
+                break  # Only show the first matching map
+
+        if not found:
+            layout.label(text="No joint maps use this vertex.")
+
+class DistRuleData(bpy.types.PropertyGroup):
+    point0: bpy.props.IntProperty(name="Point A")
+    point1: bpy.props.IntProperty(name="Point B")
+    flag0: bpy.props.IntProperty(name="Flag A")
+    flag1: bpy.props.IntProperty(name="Flag B")
+    min: bpy.props.FloatProperty(name="Min Distance")
+    max: bpy.props.FloatProperty(name="Max Distance")
+
+class TR7AE_PT_DistRuleInspector(bpy.types.Panel):
+    bl_label = "DistRule"
+    bl_idname = "TR7AE_PT_distrule_inspector"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'TR7AE'
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return (
+            obj and obj.type == 'MESH'
+            and obj.name == "ClothStrip"
+            and hasattr(obj, "tr7ae_distrules")
+            and context.mode == 'EDIT_MESH'
+            and context.tool_settings.mesh_select_mode[1]  # Edge select mode
+        )
+
+    def draw(self, context):
+        import bmesh
+        layout = self.layout
+        obj = context.object
+        bm = bmesh.from_edit_mesh(obj.data)
+        selected_edges = [e for e in bm.edges if e.select]
+
+        if not selected_edges:
+            layout.label(text="Select one or more edges.")
+            return
+
+        for e in selected_edges:
+            v1 = e.verts[0].index
+            v2 = e.verts[1].index
+
+            rule = next(
+                (r for r in obj.tr7ae_distrules
+                 if (r.point0 == v1 and r.point1 == v2) or (r.point0 == v2 and r.point1 == v1)),
+                None
+            )
+
+            box = layout.box()
+            box.label(text=f"Edge ({v1}, {v2})")
+
+            if rule:
+                box.prop(rule, "flag0", text="Flag A")
+                box.prop(rule, "flag1", text="Flag B")
+                box.prop(rule, "min")
+                box.prop(rule, "max")
+            else:
+                box.label(text="No DistRule found.")
 
 
 
@@ -3416,8 +3888,7 @@ class TR7AE_PT_DrawGroupPanel(Panel):
         return (
             obj is not None and
             obj.type == 'MESH' and
-            obj.name != "Cloth" and
-            not obj.name.startswith(("HSphere_", "HBox_", "HMarker_", "HCapsule")) and
+            not obj.name.startswith(("HSphere_", "HBox_", "HMarker_", "HCapsule", "ClothStrip", "ClothCollision_")) and
             obj.mode != 'POSE' and
             obj.type == 'MESH' and obj.get("tr7ae_type") != "ModelTarget"
         )
@@ -3511,26 +3982,361 @@ class TR7AE_PT_HSphereMeshInfo(bpy.types.Panel):
 
         # parse sphere index from name: HSphere_<bone>_<idx>
         try:
-            sphere_idx = int(obj.name.split("_")[-1])
+            global_index = int(obj.name.split("_")[-1])
         except:
-            sphere_idx = 0
-        sph = bone.tr7ae_hspheres[sphere_idx]
+            layout.label(text="Invalid object name.")
+            return
 
-        # now draw the same props you have in the Sphere panel
-        layout.prop(sph, "id")
-        layout.prop(sph, "flags")
-        layout.prop(sph, "rank")
-        layout.prop(sph, "radius")
-        layout.prop(sph, "x", text="X")
-        layout.prop(sph, "y", text="Y")
-        layout.prop(sph, "z", text="Z")
-        layout.prop(sph, "radius_sq")
-        layout.prop(sph, "mass")
-        layout.prop(sph, "buoyancy_factor")
-        layout.prop(sph, "explosion_factor")
-        layout.prop(sph, "material_type")
-        layout.prop(sph, "pad")
-        layout.prop(sph, "damage")
+        # Search globally through all tr7ae_hspheres
+        current_index = 0
+        target = None
+        for pbone in arm.pose.bones:
+            for s in pbone.tr7ae_hspheres:
+                if current_index == global_index:
+                    target = s
+                    break
+                current_index += 1
+            if target:
+                break
+
+        if not target:
+            layout.label(text="HSphere not found.")
+            return
+
+        # Draw the sphere data fields
+        layout.prop(target, "flags")
+        layout.prop(target, "id")
+        layout.prop(target, "rank")
+        layout.prop(target, "radius")
+        layout.prop(target, "x", text="X")
+        layout.prop(target, "y", text="Y")
+        layout.prop(target, "z", text="Z")
+        layout.prop(target, "radius_sq")
+        layout.prop(target, "mass")
+        layout.prop(target, "buoyancy_factor")
+        layout.prop(target, "explosion_factor")
+        layout.prop(target, "material_type")
+        layout.prop(target, "pad")
+        layout.prop(target, "damage")
+
+class TR7AE_OT_AddHSphere(bpy.types.Operator):
+    bl_idname = "tr7ae.add_hsphere"
+    bl_label = "Add HSphere to Bone"
+
+    def execute(self, context):
+        bone = context.active_pose_bone
+        arm = context.object
+
+        if not bone or not arm or arm.type != 'ARMATURE':
+            self.report({'WARNING'}, "Select a bone in pose mode")
+            return {'CANCELLED'}
+
+        # Add a new data entry to the bone
+        sphere = bone.tr7ae_hspheres.add()
+        sphere.radius = 10.0
+        sphere.x = 0.0
+        sphere.y = 0.0
+        sphere.z = 0.0
+        sphere.id = 0
+        sphere.rank = len(bone.tr7ae_hspheres) - 1
+
+        # --- Compute next available global index ---
+        existing_indices = [
+            int(obj.name.split("_")[1])
+            for obj in bpy.data.objects
+            if obj.name.startswith("HSphere_") and obj.name.split("_")[1].isdigit()
+        ]
+        next_index = max(existing_indices, default=-1) + 1
+
+        # --- Create visual mesh ---
+        mesh = bpy.data.meshes.new(f"HSphereMesh_{next_index}")
+        sphere_obj = bpy.data.objects.new(f"HSphere_{next_index}", mesh)
+        context.collection.objects.link(sphere_obj)
+
+        # Set display properties
+        sphere_obj.display_type = 'WIRE'
+        sphere_obj.show_in_front = True
+
+        # Create a UV sphere using bmesh
+        bm = bmesh.new()
+        bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=1.0)
+        bm.to_mesh(mesh)
+        bm.free()
+
+        # Set transform (at origin, scaled to radius)
+        bone_mat = arm.matrix_world @ arm.data.bones[bone.name].matrix_local
+        sphere_obj.location = bone_mat.to_translation() * 100
+        sphere_obj.scale = (sphere.radius, sphere.radius, sphere.radius)
+
+        # Assign custom properties
+        sphere_obj["tr7ae_type"] = "HSphere"
+        sphere_obj["tr7ae_bone_index"] = list(arm.pose.bones).index(bone)
+
+        # Parent to HInfo empty if it exists
+        hinfo_empty = bpy.data.objects.get("HInfo")
+        if hinfo_empty:
+            sphere_obj.parent = hinfo_empty
+
+        # Add armature modifier to follow armature
+        mod = sphere_obj.modifiers.new(name="Armature", type='ARMATURE')
+        mod.object = arm
+
+        # Create vertex group for the bone and assign all verts
+        vg = sphere_obj.vertex_groups.new(name=bone.name)
+        if sphere_obj.data and sphere_obj.data.vertices:
+            verts = [v.index for v in sphere_obj.data.vertices]
+            vg.add(verts, 1.0, 'ADD')
+
+        self.report({'INFO'}, f"Created HSphere_{next_index}")
+        return {'FINISHED'}
+    
+import bpy
+import bmesh
+from mathutils import Vector, Quaternion, Matrix
+
+class TR7AE_OT_AddHMarker(bpy.types.Operator):
+    bl_idname = "tr7ae.add_hmarker"
+    bl_label = "Add HMarker to Bone"
+
+    def execute(self, context):
+        bone = context.active_pose_bone
+        arm = context.object
+
+        if not bone or not arm or arm.type != 'ARMATURE':
+            self.report({'WARNING'}, "Select a bone in pose mode")
+            return {'CANCELLED'}
+
+        bone_index = list(arm.pose.bones).index(bone)
+
+        # --- Add new HMarker data block ---
+        marker = bone.tr7ae_hmarkers.add()
+        marker.px = 0.0
+        marker.py = 0.0
+        marker.pz = 0.0
+        marker.rx = 0.0
+        marker.ry = 0.0
+        marker.rz = 0.0
+        marker.id = 0
+        marker.rank = len(bone.tr7ae_hmarkers) - 1  # local to bone
+        marker.bone = bone_index  # stored as int
+
+        # --- Determine globally unique marker.index ---
+        existing_indices = [
+            m.index
+            for pbone in arm.pose.bones
+            if hasattr(pbone, "tr7ae_hmarkers")
+            for m in pbone.tr7ae_hmarkers
+            if hasattr(m, "index")
+        ]
+        marker.index = max(existing_indices, default=-1) + 1
+
+        # --- Determine next global object name index ---
+        existing_obj_indices = [
+            int(obj.name.split("_")[1])
+            for obj in bpy.data.objects
+            if obj.name.startswith("HMarker_") and obj.name.split("_")[1].isdigit()
+        ]
+        next_obj_index = max(existing_obj_indices, default=-1) + 1
+        marker_name = f"HMarker_{next_obj_index}"
+
+        # --- Create cone mesh object ---
+        mesh = bpy.data.meshes.new(f"HMarkerMesh_{next_obj_index}")
+        marker_obj = bpy.data.objects.new(marker_name, mesh)
+        context.collection.objects.link(marker_obj)
+
+        bm = bmesh.new()
+        bmesh.ops.create_cone(
+            bm,
+            cap_ends=True,
+            segments=8,
+            radius1=2,
+            radius2=0,
+            depth=5
+        )
+        bm.to_mesh(mesh)
+        bm.free()
+
+        # --- Place at bone head ---
+        bone_mat = arm.matrix_world @ arm.data.bones[bone.name].matrix_local
+        marker_obj.location = bone_mat.to_translation() * 100  # If using cm scale
+
+        # --- Set custom props ---
+        marker_obj["tr7ae_type"] = "HMarker"
+        marker_obj["tr7ae_bone_index"] = bone_index
+
+        # --- Parent to HInfo empty ---
+        hinfo_empty = bpy.data.objects.get("HInfo")
+        if hinfo_empty:
+            marker_obj.parent = hinfo_empty
+
+        # --- Add armature modifier ---
+        mod = marker_obj.modifiers.new(name="Armature", type='ARMATURE')
+        mod.object = arm
+
+        # --- Add vertex group for bone ---
+        vg = marker_obj.vertex_groups.new(name=bone.name)
+        if marker_obj.data and marker_obj.data.vertices:
+            verts = [v.index for v in marker_obj.data.vertices]
+            vg.add(verts, 1.0, 'ADD')
+
+        self.report({'INFO'}, f"Created HMarker_{next_obj_index}")
+        return {'FINISHED'}
+
+class TR7AE_OT_AddHBox(bpy.types.Operator):
+    bl_idname = "tr7ae.add_hbox"
+    bl_label = "Add HBox to Bone"
+
+    def execute(self, context):
+        bone = context.active_pose_bone
+        arm = context.object
+
+        if not bone or not arm or arm.type != 'ARMATURE':
+            self.report({'WARNING'}, "Select a bone in pose mode")
+            return {'CANCELLED'}
+
+        # Add a new HBox entry to the bone
+        hbox = bone.tr7ae_hboxes.add()
+        hbox.widthx = 5.0
+        hbox.widthy = 5.0
+        hbox.widthz = 5.0
+        hbox.widthw = 0.0
+        hbox.positionboxx = 0.0
+        hbox.positionboxy = 0.0
+        hbox.positionboxz = 0.0
+        hbox.positionboxw = 0.0
+        hbox.quatx = 0.0
+        hbox.quaty = 0.0
+        hbox.quatz = 0.0
+        hbox.quatw = 1.0
+        hbox.flags = 0
+        hbox.id = 0
+        hbox.rank = len(bone.tr7ae_hboxes) - 1
+
+        # Compute next available global index
+        existing_indices = [
+            int(obj.name.split("_")[1])
+            for obj in bpy.data.objects
+            if obj.name.startswith("HBox_") and obj.name.split("_")[1].isdigit()
+        ]
+        next_index = max(existing_indices, default=-1) + 1
+
+        # Create cube mesh
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+        box_obj = bpy.context.active_object
+        box_obj.name = f"HBox_{next_index}"
+        box_obj.display_type = 'WIRE'
+        box_obj.show_in_front = True
+
+        # Set transform to bone head
+        bone_mat = arm.matrix_world @ arm.data.bones[bone.name].matrix_local
+        box_obj.location = bone_mat.to_translation() * 100
+
+        # Set scale to half-extents
+        box_obj.scale = (hbox.widthx, hbox.widthy, hbox.widthz)
+
+        # Set custom props
+        box_obj["tr7ae_type"] = "HBox"
+        box_obj["tr7ae_bone_index"] = list(arm.pose.bones).index(bone)
+
+        # Parent to HInfo empty if it exists
+        hinfo_empty = bpy.data.objects.get("HInfo")
+        if hinfo_empty:
+            box_obj.parent = hinfo_empty
+            box_obj.matrix_parent_inverse.identity()
+
+        # Add Armature modifier
+        mod = box_obj.modifiers.new(name="Armature", type='ARMATURE')
+        mod.object = arm
+
+        # Create and assign vertex group
+        vg = box_obj.vertex_groups.new(name=bone.name)
+        if box_obj.data and box_obj.data.vertices:
+            verts = [v.index for v in box_obj.data.vertices]
+            vg.add(verts, 1.0, 'ADD')
+
+        self.report({'INFO'}, f"Created HBox_{next_index}")
+        return {'FINISHED'}
+
+class TR7AE_OT_AddHCapsule(bpy.types.Operator):
+    bl_idname = "tr7ae.add_hcapsule"
+    bl_label = "Add HCapsule to Bone"
+
+    def execute(self, context):
+        bone = context.active_pose_bone
+        arm = context.object
+
+        if not bone or not arm or arm.type != 'ARMATURE':
+            self.report({'WARNING'}, "Select a bone in pose mode")
+            return {'CANCELLED'}
+
+        # Add a new HCapsule entry
+        hcap = bone.tr7ae_hcapsules.add()
+        hcap.radius = 2.0
+        hcap.ymin = -5.0
+        hcap.ymax = 5.0
+        hcap.id = 0
+        hcap.rank = len(bone.tr7ae_hcapsules) - 1
+
+        # Compute next global index
+        existing_indices = [
+            int(obj.name.split("_")[1])
+            for obj in bpy.data.objects
+            if obj.name.startswith("HCapsule_") and obj.name.split("_")[1].isdigit()
+        ]
+        next_index = max(existing_indices, default=-1) + 1
+        name = f"HCapsule_{next_index}"
+
+        # Create capsule-like mesh using cylinder + bmesh domes
+        mesh = bpy.data.meshes.new(f"HCapsuleMesh_{next_index}")
+        obj = bpy.data.objects.new(name, mesh)
+        context.collection.objects.link(obj)
+
+        bm = bmesh.new()
+
+        # Capsule body
+        bmesh.ops.create_cone(
+            bm,
+            cap_ends=True,
+            segments=16,
+            radius1=hcap.radius,
+            radius2=hcap.radius,
+            depth=hcap.ymax - hcap.ymin
+        )
+
+        bm.to_mesh(mesh)
+        bm.free()
+
+        # Position at bone head
+        bone_mat = arm.matrix_world @ arm.data.bones[bone.name].matrix_local
+        obj.location = bone_mat.to_translation() * 100
+
+        # Set display
+        obj.display_type = 'WIRE'
+        obj.show_in_front = True
+        obj.name = name
+
+        # Assign custom props
+        obj["tr7ae_type"] = "HCapsule"
+        obj["tr7ae_bone_index"] = list(arm.pose.bones).index(bone)
+
+        # Parent to HInfo empty if available
+        hinfo_empty = bpy.data.objects.get("HInfo")
+        if hinfo_empty:
+            obj.parent = hinfo_empty
+            obj.matrix_parent_inverse.identity()
+
+        # Add Armature modifier
+        mod = obj.modifiers.new(name="Armature", type='ARMATURE')
+        mod.object = arm
+
+        # Create and assign vertex group
+        vg = obj.vertex_groups.new(name=bone.name)
+        if obj.data and obj.data.vertices:
+            verts = [v.index for v in obj.data.vertices]
+            vg.add(verts, 1.0, 'ADD')
+
+        self.report({'INFO'}, f"Created HCapsule_{next_index}")
+        return {'FINISHED'}
 
 import bpy
 
@@ -3558,6 +4364,8 @@ class TR7AE_PT_HBoxInfo(Panel):
     bl_category = 'TR7AE'
     bl_options = {'DEFAULT_CLOSED'}
 
+    _hbox_expand = {}
+
     @classmethod
     def poll(cls, context):
         obj = context.active_object
@@ -3571,84 +4379,123 @@ class TR7AE_PT_HBoxInfo(Panel):
 
     def draw(self, context):
         layout = self.layout
-        obj    = context.active_object
+        obj = context.active_object
 
-        # 1) Armature + bone context
-        if obj.type == 'ARMATURE' and context.active_pose_bone:
-            bone   = context.active_pose_bone
-            # if you only ever import one box per bone you can do bone.tr7ae_hboxes[0]
-            # but this will list them all in sequence:
-            for i, box in enumerate(bone.tr7ae_hboxes):
-                sub = layout.box()
-                sub.label(text=f"HBox {i}  (Flags: {box.flags})")
-                sub.prop(box, "widthx")
-                sub.prop(box, "widthy")
-                sub.prop(box, "widthz")
-                sub.prop(box, "widthw")
-                sub.prop(box, "positionx")
-                sub.prop(box, "positiony")
-                sub.prop(box, "positionz")
-                sub.prop(box, "positionw")
-                sub.prop(box, "quatx")
-                sub.prop(box, "quaty")
-                sub.prop(box, "quatz")
-                sub.prop(box, "quatw")
-                sub.prop(box, "flags")
-                sub.prop(box, "id")
-                sub.prop(box, "rank")
-                sub.prop(box, "mass")
-                sub.prop(box, "buoyancy_factor")
-                sub.prop(box, "explosion_factor")
-                sub.prop(box, "material_type")
-                sub.prop(box, "pad")
-                sub.prop(box, "damage")
-                sub.prop(box, "pad1")
-            return
-
-        # 2) Mesh HBox context
+        # 1) Mesh selected: show global index-based single box
         if obj.type == 'MESH' and obj.get("tr7ae_type") == "HBox":
-            # find the armature and bone this cube came from
-            arm = obj.find_armature()
-            i   = obj.get("tr7ae_bone_index", 0)
-            bone = arm.pose.bones.get(f"Bone_{i}") if arm else None
-            if not bone:
-                layout.label(text="Could not find Bone_{i}")
+            try:
+                global_index = int(obj.name.split("_")[-1])
+            except:
+                layout.label(text="Invalid object name.")
                 return
 
-            # pull out the correct entry in the collection by parsing your name:
-            try:
-                idx = int(obj.name.rsplit("_", 1)[-1])
-            except:
-                idx = 0
-            box = bone.tr7ae_hboxes[idx]
+            arm = obj.find_armature()
+            if not arm:
+                layout.label(text="No armature found.")
+                return
 
-            # now precisely the same props as above:
-            layout.prop(box, "widthx")
-            layout.prop(box, "widthy")
-            layout.prop(box, "widthz")
-            layout.prop(box, "widthw")
-            layout.prop(box, "positionx")
-            layout.prop(box, "positiony")
-            layout.prop(box, "positionz")
-            layout.prop(box, "positionw")
-            layout.prop(box, "quatx")
-            layout.prop(box, "quaty")
-            layout.prop(box, "quatz")
-            layout.prop(box, "quatw")
-            layout.prop(box, "flags")
-            layout.prop(box, "id")
-            layout.prop(box, "rank")
-            layout.prop(box, "mass")
-            layout.prop(box, "buoyancy_factor")
-            layout.prop(box, "explosion_factor")
-            layout.prop(box, "material_type")
-            layout.prop(box, "pad")
-            layout.prop(box, "damage")
-            layout.prop(box, "pad1")
+            current_index = 0
+            targetbox = None
+            for pbone in arm.pose.bones:
+                for h in pbone.tr7ae_hboxes:
+                    if current_index == global_index:
+                        targetbox = h
+                        break
+                    current_index += 1
+                if targetbox:
+                    break
+
+            if not targetbox:
+                layout.label(text="HBox not found.")
+                return
+
+            sub = layout.box()
+            sub.label(text=f"HBox {global_index}")
+            sub.prop(targetbox, "widthx")
+            sub.prop(targetbox, "widthy")
+            sub.prop(targetbox, "widthz")
+            sub.prop(targetbox, "widthw")
+            sub.prop(targetbox, "positionboxx")
+            sub.prop(targetbox, "positionboxy")
+            sub.prop(targetbox, "positionboxz")
+            sub.prop(targetbox, "positionboxw")
+            sub.prop(targetbox, "quatx")
+            sub.prop(targetbox, "quaty")
+            sub.prop(targetbox, "quatz")
+            sub.prop(targetbox, "quatw")
+            sub.prop(targetbox, "flags")
+            sub.prop(targetbox, "id")
+            sub.prop(targetbox, "rank")
+            sub.prop(targetbox, "mass")
+            sub.prop(targetbox, "buoyancy_factor")
+            sub.prop(targetbox, "explosion_factor")
+            sub.prop(targetbox, "material_type")
+            sub.prop(targetbox, "pad")
+            sub.prop(targetbox, "damage")
+            sub.prop(targetbox, "pad1")
+            return
+
+        # 2) Armature + Pose Bone context: show all boxes on the active bone
+        if obj.type == 'ARMATURE' and context.active_pose_bone:
+            bone = context.active_pose_bone
+            for i, box in enumerate(bone.tr7ae_hboxes):
+                key = f"{bone.name}_{i}"
+                expand = TR7AE_PT_HBoxInfo._hbox_expand.get(key, False)
+
+                row = layout.row(align=True)
+                split = row.split(factor=0.9)
+                split.label(text=f"HBox {i} (Flags: {box.flags})")
+                split.operator("tr7ae.toggle_hbox", text="▼" if expand else "►", emboss=False).hbox_key = key
+
+                if expand:
+                    sub = layout.box()
+                    sub.prop(box, "widthx")
+                    sub.prop(box, "widthy")
+                    sub.prop(box, "widthz")
+                    sub.prop(box, "widthw")
+                    sub.prop(box, "positionboxx")
+                    sub.prop(box, "positionboxy")
+                    sub.prop(box, "positionboxz")
+                    sub.prop(box, "positionboxw")
+                    sub.prop(box, "quatx")
+                    sub.prop(box, "quaty")
+                    sub.prop(box, "quatz")
+                    sub.prop(box, "quatw")
+                    sub.prop(box, "flags")
+                    sub.prop(box, "rank")
+                    sub.prop(box, "mass")
+                    sub.prop(box, "buoyancy_factor")
+                    sub.prop(box, "explosion_factor")
+                    sub.prop(box, "material_type")
+                    sub.prop(box, "pad")
+                    sub.prop(box, "damage")
+                    sub.prop(box, "pad1")
+
             return
 
         # fallback
         layout.label(text="No HBox data available.")
+
+class TR7AE_PT_AddHInfoButtons(bpy.types.Panel):
+    bl_label = "Add HInfo Component"
+    bl_idname = "TR7AE_PT_AddHInfoButtons"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'TR7AE'
+    bl_parent_id = "TR7AE_PT_Tools"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_pose_bone is not None
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Add to Active Bone:")
+        layout.operator("tr7ae.add_hsphere", text="HSphere")
+        layout.operator("tr7ae.add_hmarker", text="HMarker")
+        layout.operator("tr7ae.add_hbox", text="HBox")
+        layout.operator("tr7ae.add_hcapsule", text="HCapsule")
 
 
 class TR7AE_OT_ToggleCapsule(bpy.types.Operator):
@@ -3778,6 +4625,7 @@ class TR7AE_PT_MarkersInfo(bpy.types.Panel):
             if expand_state[key]:
                 box = layout.box()
                 box.prop(marker, "bone")
+                box.prop(marker, "index")
                 box.label(text="Position:")
                 box.prop(marker, "px", text="X")
                 box.prop(marker, "py", text="Y")
@@ -3835,12 +4683,40 @@ class TR7AE_PT_HMarkerMeshInfo(bpy.types.Panel):
             layout.label(text="Invalid HMarker name format.")
             return
 
-        marker = next((m for m in pbone.tr7ae_hmarkers if m.index == marker_index), None)
+        obj = context.object
+        if not obj or not obj.name.startswith("HMarker_"):
+            layout.label(text="Select an HMarker.")
+            return
+
+        try:
+            marker_index = int(obj.name.split("_")[1])
+        except:
+            layout.label(text="Invalid HMarker name.")
+            return
+
+        armature = obj.find_armature()
+        if not armature:
+            layout.label(text="HMarker not parented to armature.")
+            return
+
+        # Match by global order of all markers
+        global_index = 0
+        marker = None
+        for pbone in armature.pose.bones:
+            for m in pbone.tr7ae_hmarkers:
+                if global_index == marker_index:
+                    marker = m
+                    break
+                global_index += 1
+            if marker:
+                break
+
         if not marker:
-            layout.label(text="No matching marker found.")
+            layout.label(text="Marker not found.")
             return
 
         layout.prop(marker, "bone")
+        layout.prop(marker, "index")
         layout.label(text="Position:")
         layout.prop(marker, "px", text="X")
         layout.prop(marker, "py", text="Y")
@@ -3859,6 +4735,17 @@ class TR7AE_OT_ToggleSphere(bpy.types.Operator):
     def execute(self, context):
         expand = TR7AE_PT_Tools._sphere_expand
         expand[self.sphere_key] = not expand.get(self.sphere_key, False)
+        return {'FINISHED'}
+    
+class TR7AE_OT_ToggleHBox(bpy.types.Operator):
+    bl_idname = "tr7ae.toggle_hbox"
+    bl_label = "Toggle HBox Section"
+
+    hbox_key: bpy.props.StringProperty()
+
+    def execute(self, context):
+        expand = TR7AE_PT_HBoxInfo._hbox_expand
+        expand[self.hbox_key] = not expand.get(self.hbox_key, False)
         return {'FINISHED'}
 
 class TR7AE_OT_ToggleMarker(bpy.types.Operator):
@@ -4149,7 +5036,7 @@ def on_blend_value_changed(self, context):
         links.new(tex_image.outputs['Color'], mult_node.inputs['Color1'])
         links.new(attr.outputs['Color'], mult_node.inputs['Color2'])
 
-        links.new(tex_image.outputs['Alpha'], greater.inputs[0])  # ✅ Only this input to Greater Than
+        links.new(tex_image.outputs['Alpha'], greater.inputs[0])
 
         links.new(mult_node.outputs['Color'], bsdf.inputs['Base Color'])
         links.new(greater.outputs[0], bsdf.inputs['Alpha'])
@@ -4560,26 +5447,37 @@ def tr7ae_sync_handler(depsgraph):
         if not arm:
             continue
 
-        pbone = arm.pose.bones.get(f"Bone_{bone_index}")
-        if not pbone:
+        try:
+            global_index = int(obj.name.split("_")[-1])
+        except:
             continue
 
-        # compute object position in bone-local space
-        bone_matrix = arm.matrix_world @ arm.data.bones[pbone.name].matrix_local
+        # Search all hspheres globally
+        current_index = 0
+        target = None
+        bone_name = None
+        for pbone in arm.pose.bones:
+            for s in pbone.tr7ae_hspheres:
+                if current_index == global_index:
+                    target = s
+                    bone_name = pbone.name
+                    break
+                current_index += 1
+            if target:
+                break
+
+        if not target or not bone_name:
+            continue
+
+        # Compute object position in bone-local space
+        bone_matrix = arm.matrix_world @ arm.data.bones[bone_name].matrix_local
         local_pos = bone_matrix.inverted() @ obj.matrix_world.translation
 
-        # determine which SphereInfo entry this object corresponds to
-        try:
-            sphere_idx = int(obj.name.split("_")[-1])
-        except:
-            sphere_idx = 0
-        sph = pbone.tr7ae_hspheres[sphere_idx]
-
-        # write into that SphereInfo item
-        sph.x      = local_pos.x
-        sph.y      = local_pos.y
-        sph.z      = local_pos.z
-        sph.radius = obj.scale.x / 1
+        # Write into the target SphereInfo entry
+        target.x = local_pos.x
+        target.y = local_pos.y
+        target.z = local_pos.z
+        target.radius = obj.scale.x  # assumes uniform scaling on X for radius
 
 @persistent
 def sync_hbox_transforms(scene):
@@ -4591,45 +5489,52 @@ def sync_hbox_transforms(scene):
         if not arm:
             continue
 
-        bone_index = obj.get("tr7ae_bone_index")
-        if bone_index is None:
-            continue
-
-        bone_name = f"Bone_{bone_index}"
-        pbone    = arm.pose.bones.get(bone_name)
-        if not pbone or not pbone.tr7ae_hboxes:
-            continue
-
-        # parse the box index from the object’s name: HBox_<bone>_<idx>
         try:
-            box_idx = int(obj.name.split("_")[-1])
+            global_index = int(obj.name.split("_")[-1])
         except:
-            box_idx = 0
-        box = pbone.tr7ae_hboxes[box_idx]  # type: TR7AE_HBoxInfo
+            continue
 
-        # Build the bone’s rest-space matrix
+        # Search all HBoxes globally
+        current_index = 0
+        targetbox = None
+        bone_name = None
+
+        for pbone in arm.pose.bones:
+            for h in pbone.tr7ae_hboxes:
+                if current_index == global_index:
+                    targetbox = h
+                    bone_name = pbone.name
+                    break
+                current_index += 1
+            if targetbox:
+                break
+
+        if not targetbox or not bone_name:
+            continue
+
+        # Compute local transform in bone space
         bone_mat = arm.matrix_world @ arm.data.bones[bone_name].matrix_local
-        # Compute the box’s local matrix in bone-space
         local_mat = bone_mat.inverted() @ obj.matrix_world
 
-        # --- Update position (remember you scaled pos by 100 on import) ---
+        # --- Update position (in bone-local space) ---
         loc = local_mat.to_translation()
-        box.positionx = loc.x
-        box.positiony = loc.y
-        box.positionz = loc.z
+        targetbox.positionboxx = loc.x
+        targetbox.positionboxy = loc.y
+        targetbox.positionboxz = loc.z
 
-        # --- Update half-extents from the object’s scale directly ---
-        box.widthx = obj.scale.x
-        box.widthy = obj.scale.y
-        box.widthz = obj.scale.z
-        # (widthw is rarely used — leave it or set to 0)
+        # --- Update half-extents from scale ---
+        targetbox.widthx = obj.scale.x
+        targetbox.widthy = obj.scale.y
+        targetbox.widthz = obj.scale.z
+        # Optional: target.widthw = 0.0
 
-        # --- Update orientation quaternion ---
-        quat = local_mat.to_quaternion()
-        box.quatx = quat.x
-        box.quaty = quat.y
-        box.quatz = quat.z
-        box.quatw = quat.w
+        # --- Update rotation ---
+        quat = obj.matrix_world.to_quaternion()
+        targetbox.quatx = quat.x
+        targetbox.quaty = quat.y
+        targetbox.quatz = quat.z
+        targetbox.quatw = quat.w
+
 
 @persistent
 def sync_hcapsule_transforms(scene):
@@ -4690,23 +5595,26 @@ def sync_hmarker_transforms(scene):
         if not arm:
             continue
 
-        bone_index = obj.get("tr7ae_bone_index")
-        if bone_index is None:
-            continue
-
         try:
-            marker_index = int(obj.name.split("_")[-1])
+            global_index = int(obj.name.split("_")[-1])
         except:
             continue
 
-        bone_name = f"Bone_{bone_index}"
-        pbone = arm.pose.bones.get(bone_name)
-        if not pbone or not hasattr(pbone, "tr7ae_hmarkers"):
-            continue
+        # Search all markers across all bones by global index
+        current_index = 0
+        marker = None
+        bone_name = None
+        for bone in arm.pose.bones:
+            for m in bone.tr7ae_hmarkers:
+                if current_index == global_index:
+                    marker = m
+                    bone_name = bone.name
+                    break
+                current_index += 1
+            if marker:
+                break
 
-        # Match marker by index
-        marker = next((m for m in pbone.tr7ae_hmarkers if m.index == marker_index), None)
-        if not marker:
+        if not marker or bone_name is None:
             continue
 
         # Get object's world matrix
@@ -4722,8 +5630,8 @@ def sync_hmarker_transforms(scene):
         marker.py = pos.y
         marker.pz = pos.z
 
-        # Update rotation (approximate axis-angle)
-        rot = local_mat.to_euler()
+        # Update rotation (approximate Euler)
+        rot = local_mat.to_euler(obj.rotation_mode)
         marker.rx = rot.x
         marker.ry = rot.y
         marker.rz = rot.z
@@ -4736,26 +5644,28 @@ def sync_model_target_properties(scene):
         if not hasattr(obj, "tr7ae_modeltarget"):
             continue
 
-        bone_name = obj.parent_bone
-        armature = obj.parent
-        if not armature or armature.type != 'ARMATURE' or not bone_name:
+        segment = obj.get("tr7ae_segment")
+        if segment is None:
             continue
 
-        # Compute transform relative to the bone
+        armature = obj.find_armature()
+        if not armature or armature.type != 'ARMATURE':
+            continue
+
+        bone_name = f"Bone_{segment}"
         bone = armature.pose.bones.get(bone_name)
         if not bone:
             continue
 
-        # Bone's matrix in world space
-        bone_matrix_world = armature.matrix_world @ bone.matrix
+        # Bone rest matrix in world space
+        bone_matrix_world = armature.matrix_world @ armature.data.bones[bone_name].matrix_local
 
-        # Target's matrix in world space
+        # Object world matrix (already parented to "Targets" empty)
         target_matrix_world = obj.matrix_world
 
-        # Compute relative matrix
+        # Compute local transform relative to bone
         relative_matrix = bone_matrix_world.inverted() @ target_matrix_world
 
-        # Extract position and rotation
         loc = relative_matrix.to_translation()
         rot = relative_matrix.to_euler('XYZ')
 
@@ -4771,17 +5681,18 @@ def sync_model_target_properties(scene):
 def register():
     # Classes registration
     classes = [
+        ClothPointData, DistRuleData, ClothJointMapData,
         TR7AE_SphereInfo, TR7AE_HCapsuleInfo, TR7AE_HBoxInfo, TR7AE_HMarkerInfo,
         TR7AE_OT_ImportModel, TR7AE_PT_Tools, TR7AE_OT_ToggleHSpheres,
         TR7AE_OT_ToggleHBoxes, TR7AE_OT_ToggleHMarkers, TR7AE_PT_DrawGroupPanel,
         TR7AE_PT_ModelDebugProperties, TR7AE_PT_MaterialPanel, TR7AE_PT_SphereInfo,
-        TR7AE_PT_HCapsuleInfo, TR7AE_PT_HBoxInfo, TR7AE_PT_MarkersInfo,
-        TR7AE_OT_NormalizeAndLimitWeights, TR7AE_OT_ToggleMarker,
-        TR7AE_OT_ToggleSphere, TR7AE_OT_ToggleCapsule, TR7AE_OT_ToggleBox,
-        TR7AE_PT_HMarkerMeshInfo, TR7AE_PT_HCapsuleMeshInfo, TR7AE_OT_ToggleHCapsules,
-        TR7AE_OT_ExportCustomModel, TR7AE_OT_SnapBoneToHMarker,
-        TR7AE_PT_ClothPanel, TR7AE_ClothSettings, TR7AE_ModelTargetInfo,
-        TR7AE_PT_HSphereMeshInfo, TR7AE_PT_UtilitiesPanel,
+        TR7AE_PT_HCapsuleInfo, TR7AE_PT_HBoxInfo, TR7AE_PT_MarkersInfo, TR7AE_PT_ClothPointInspector, TR7AE_PT_DistRuleInspector, TR7AE_PT_ClothJointMapInspector,
+        TR7AE_OT_NormalizeAndLimitWeights, TR7AE_OT_ToggleMarker, TR7AE_OT_ToggleHBox, TR7AE_OT_AddHBox, TR7AE_OT_AddHCapsule,
+        TR7AE_OT_ToggleSphere, TR7AE_OT_ToggleCapsule, TR7AE_OT_ToggleBox, TR7AE_OT_AddHSphere, TR7AE_OT_AddHMarker,
+        TR7AE_PT_HMarkerMeshInfo, TR7AE_PT_HCapsuleMeshInfo, TR7AE_OT_ToggleHCapsules, TR7AE_PT_AddHInfoButtons,
+        TR7AE_OT_ExportCustomModel, TR7AE_OT_SnapBoneToHMarker, TR7AE_OT_ConvertImageToPCD, TR7AE_PT_TextureTools,
+        TR7AE_PT_ClothPanel, TR7AE_ClothSettings, TR7AE_ModelTargetInfo, TR7AE_OT_ConvertPCDToDDS,
+        TR7AE_PT_HSphereMeshInfo, TR7AE_PT_UtilitiesPanel, TR7AE_Preferences,
         TR7AE_PT_VisibilityPanel, TR7AE_SectionPaths, TR7AE_OT_ToggleHInfoVisibility,
         TR7AE_PT_FileSectionsPanel
     ]
@@ -4794,6 +5705,9 @@ def register():
     bpy.types.PoseBone.tr7ae_hcapsules = bpy.props.CollectionProperty(type=TR7AE_HCapsuleInfo)
     bpy.types.PoseBone.tr7ae_hspheres = bpy.props.CollectionProperty(type=TR7AE_SphereInfo)
     bpy.types.PoseBone.tr7ae_hboxes = bpy.props.CollectionProperty(type=TR7AE_HBoxInfo)
+    bpy.types.Object.cloth_points = bpy.props.CollectionProperty(type=ClothPointData)
+    bpy.types.Object.tr7ae_distrules = bpy.props.CollectionProperty(type=DistRuleData)
+    bpy.types.Object.tr7ae_jointmaps = bpy.props.CollectionProperty(type=ClothJointMapData)
 
     bpy.types.Object.tr7ae_sections = bpy.props.PointerProperty(type=TR7AE_SectionPaths)
     bpy.types.Object.tr7ae_modeltarget = bpy.props.PointerProperty(type=TR7AE_ModelTargetInfo)
@@ -4817,6 +5731,7 @@ def register():
             bpy.app.handlers.depsgraph_update_post.append(handler)
 
 
+
 def unregister():
     # Remove handlers
     handlers = [
@@ -4834,6 +5749,9 @@ def unregister():
     del bpy.types.PoseBone.tr7ae_hcapsules
     del bpy.types.PoseBone.tr7ae_hboxes
     del bpy.types.PoseBone.tr7ae_hmarkers
+    del bpy.types.Object.cloth_points
+    del bpy.types.Object.tr7ae_distrules
+    del bpy.types.Object.tr7ae_jointmaps
 
     del bpy.types.Object.tr7ae_sections
     del bpy.types.Object.tr7ae_modeltarget
@@ -4852,16 +5770,17 @@ def unregister():
         TR7AE_ClothSettings, TR7AE_PT_ClothPanel,
         TR7AE_OT_SnapBoneToHMarker, TR7AE_PT_HCapsuleMeshInfo,
         TR7AE_PT_HMarkerMeshInfo, TR7AE_OT_ToggleBox,
-        TR7AE_OT_ToggleCapsule, TR7AE_OT_ToggleSphere,
-        TR7AE_OT_ToggleMarker, TR7AE_PT_MarkersInfo,
-        TR7AE_OT_ExportCustomModel, TR7AE_OT_NormalizeAndLimitWeights,
-        TR7AE_PT_HBoxInfo, TR7AE_PT_HCapsuleInfo,
-        TR7AE_PT_SphereInfo, TR7AE_PT_MaterialPanel,
-        TR7AE_PT_ModelDebugProperties, TR7AE_PT_DrawGroupPanel,
-        TR7AE_OT_ToggleHMarkers, TR7AE_OT_ToggleHBoxes,
+        TR7AE_OT_ToggleCapsule, TR7AE_OT_ToggleSphere, TR7AE_PT_ClothPointInspector, TR7AE_PT_DistRuleInspector, TR7AE_PT_ClothJointMapInspector,
+        TR7AE_OT_ToggleMarker, TR7AE_PT_MarkersInfo, TR7AE_OT_AddHSphere,
+        TR7AE_OT_ExportCustomModel, TR7AE_OT_NormalizeAndLimitWeights, TR7AE_OT_AddHCapsule,
+        TR7AE_PT_HBoxInfo, TR7AE_PT_HCapsuleInfo, TR7AE_OT_ToggleHBox, TR7AE_OT_AddHMarker, TR7AE_OT_AddHBox,
+        TR7AE_PT_SphereInfo, TR7AE_PT_MaterialPanel, TR7AE_OT_ConvertImageToPCD, TR7AE_PT_TextureTools,
+        TR7AE_PT_ModelDebugProperties, TR7AE_PT_DrawGroupPanel, TR7AE_OT_ConvertPCDToDDS, TR7AE_PT_AddHInfoButtons,
+        TR7AE_OT_ToggleHMarkers, TR7AE_OT_ToggleHBoxes, TR7AE_Preferences,
         TR7AE_OT_ToggleHSpheres, TR7AE_PT_Tools, TR7AE_OT_ToggleHCapsules,
         TR7AE_OT_ImportModel, TR7AE_HMarkerInfo, TR7AE_OT_ToggleHInfoVisibility,
-        TR7AE_HBoxInfo, TR7AE_HCapsuleInfo, TR7AE_SphereInfo
+        TR7AE_HBoxInfo, TR7AE_HCapsuleInfo, TR7AE_SphereInfo,
+        ClothPointData, DistRuleData, ClothJointMapData
     ]
 
     for cls in classes:
