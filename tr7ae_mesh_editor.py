@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tomb Raider 7/AE Mesh Editor",
     "author": "Raq",
     "collaborators": "Che, TheIndra, arcusmaximus (arc), DKDave, Joschka, Henry",
-    "version": (1, 1, 5),
+    "version": (1, 1, 6),
     "blender": (4, 2, 3),
     "location": "View3D > Sidebar > TR7AE Tools",
     "description": "Import and export Tomb Raider Legend/Anniversary mesh files.",
@@ -29,6 +29,17 @@ from bpy.props import StringProperty, CollectionProperty
 import os
 import subprocess
 import bmesh
+
+import bpy
+import mathutils
+import numpy as np
+
+cloth_sim_state = {
+    "positions": None,
+    "velocities": None,
+    "last_frame": -1
+}
+
 
 def convert_dds_to_pcd(dds_path, output_pcd_path):
     dds_path = Path(dds_path)
@@ -742,7 +753,7 @@ class TR7AE_OT_ExportCustomModel(Operator):
                     z = clamp_short(scaled.z)
 
                     # Write vertex colors
-                    layer_color = mesh.data.vertex_colors.active
+                    layer_color = mesh.data.vertex_colors.get("Color")
                     if layer_color:
                         color_data = layer_color.data
 
@@ -805,69 +816,57 @@ class TR7AE_OT_ExportCustomModel(Operator):
                 mface_list_offset = mb.tell()  # SAVE START OF MFACE ONCE
 
                 for mesh_obj in mesh_objs:
-                    if not mesh_obj.get("tr7ae_is_mface"):
-                        continue  # Only process MFace meshes
+                    if mesh_obj.get("tr7ae_is_mface"):
+                        continue  # Skip old MFace meshes
 
                     depsgraph = bpy.context.evaluated_depsgraph_get()
                     eval_obj = mesh_obj.evaluated_get(depsgraph)
                     eval_mesh = eval_obj.to_mesh()
 
-                    vcol_layer = eval_mesh.vertex_colors.get("DryingGroups")
-                    if not vcol_layer:
-                        print(f"[WARNING] MFace {mesh_obj.name} missing DryingGroups.")
-                        continue
-
-                    # Build a position → index map from the real sorted verts
-                    real_positions = {}
-                    for idx, (mesh, orig_idx, _) in enumerate(sorted_verts):
-                        eval_real_obj = mesh.evaluated_get(depsgraph)
-                        eval_real_mesh = eval_real_obj.to_mesh()
-                        real_vert = eval_real_mesh.vertices[orig_idx]
-                        pos = (mesh.matrix_world @ real_vert.co).to_tuple(5)
-                        real_positions[pos] = idx
-                        eval_real_obj.to_mesh_clear()
-
-                    # Build remap
-                    vertex_remap = {}
-                    for v in eval_mesh.vertices:
-                        mface_pos = (mesh_obj.matrix_world @ v.co).to_tuple(5)
-
-                        # Find exact match
-                        target_idx = real_positions.get(mface_pos)
-                        if target_idx is None:
-                            raise ValueError(f"Vertex at {mface_pos} not found in sorted verts!")
-
-                        vertex_remap[v.index] = target_idx
+                    drying_layer = eval_mesh.vertex_colors.get("MFace")
+                    if not drying_layer:
+                        continue  # Skip if no group data
 
                     for poly in eval_mesh.polygons:
                         if poly.loop_total != 3:
-                            continue  # Only triangles
+                            continue  # Ensure triangle
 
-                        v0 = vertex_remap[eval_mesh.loops[poly.loop_start + 0].vertex_index]
-                        v1 = vertex_remap[eval_mesh.loops[poly.loop_start + 1].vertex_index]
-                        v2 = vertex_remap[eval_mesh.loops[poly.loop_start + 2].vertex_index]
+                        indices = []
+                        gids = []
 
-                        # Collect original group IDs
-                        gid_lookup = {}
                         for i in range(3):
-                            original_v = eval_mesh.loops[poly.loop_start + i].vertex_index
-                            color = vcol_layer.data[poly.loop_start + i].color
+                            loop = eval_mesh.loops[poly.loop_start + i]
+                            vertex_index = loop.vertex_index
+                            mapped_idx = vertex_index_map.get((mesh_obj.name, vertex_index))
+                            if mapped_idx is None:
+                                break  # Skip face if mapping failed
+                            indices.append(mapped_idx)
+
+                            color = drying_layer.data[poly.loop_start + i].color
                             gid = find_closest_group_id(color)
-                            gid_lookup[vertex_remap[original_v]] = gid
+                            gids.append(gid)
 
-                        # Now use remapped indices to build 'same'
-                        same = (gid_lookup[v2] << 10) | (gid_lookup[v1] << 5) | gid_lookup[v0]
+                        if len(indices) != 3 or len(gids) != 3:
+                            continue
 
+                        v0, v1, v2 = indices
+                        gid0, gid1, gid2 = gids
+
+                        same = (gid2 << 10) | (gid1 << 5) | gid0
+
+                        # Clamp each GID to be at least 1
+                        gid0 = max(gid0, 1)
+                        gid1 = max(gid1, 1)
+                        gid2 = max(gid2, 1)
+
+                        same = (gid2 << 10) | (gid1 << 5) | gid0
                         mb.write(struct.pack("<4H", v0, v1, v2, same))
 
-                    eval_obj.to_mesh_clear()
+                mb.seek(num_faces_offset + 4)
+                write_offset(mb, mface_list_offset, relocations)
+                mb.seek(0, 2)
 
-                # === Patch MFace pointer ===
-                for mesh_obj in mesh_objs:
-                    if mesh_obj.get("tr7ae_is_mface"):
-                        mb.seek(num_faces_offset + 4)
-                        write_offset(mb, mface_list_offset, relocations)
-                        mb.seek(0, 2)
+                eval_obj.to_mesh_clear()
 
                 align_stream(mb, 16)
                 face_list_offset = mb.tell()
@@ -2873,6 +2872,8 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
         if do_import_cloth:
             try_import_cloth(filepath, armature_obj)
 
+        drying_groups_by_vertex = {}
+
         if mface_list != 0:
             fhandle.seek(mface_list + section_info_size)
             mface_faces = []
@@ -2886,102 +2887,36 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                 mface_faces.append((v0, v1, v2))
                 mface_samebits.append(same)
 
-            if mface_faces:
-                # 1. Find all unique vertex indices used in mface_faces
-                used_verts = set()
-                for tri in mface_faces:
-                    used_verts.update(tri)
+            for (v0, v1, v2), same in zip(mface_faces, mface_samebits):
+                gid0 = (same >> 0) & 0b11111
+                gid1 = (same >> 5) & 0b11111
+                gid2 = (same >> 10) & 0b11111
 
-                # 2. Remap them to new compact indices
-                used_verts_sorted = sorted(used_verts)
-                index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(used_verts_sorted)}
-
-                # 3. Rebuild face list with remapped indices
-                remapped_faces = [tuple(index_remap[v] for v in face) for face in mface_faces]
-
-                # 4. Filter verts, uvs, etc.
-                filtered_verts = [verts[v] for v in used_verts_sorted]
-                filtered_uvs = [uvs[v] for v in used_verts_sorted]
-                filtered_segments = [segments[v] for v in used_verts_sorted]
-
-                # 5. Create mesh from only used verts
-                mface_mesh = bpy.data.meshes.new("TR7AE_MFace_Mesh")
-                # Full vertex list
-                mface_mesh.from_pydata(verts, [], mface_faces)
-
-
-                import random
-
-                # Generate a map of group_id -> color
-                group_color_map = {}
-                def get_group_color(group_id):
-                    if group_id not in group_color_map:
-                        random.seed(group_id)  # Deterministic color per group
-                        group_color_map[group_id] = (
-                            random.random(), random.random(), random.random(), 1.0
-                        )
-                    return group_color_map[group_id]
-
-                # New vertex color layer
-                group_vcol_layer = mface_mesh.vertex_colors.new(name="DryingGroups")
-
-                for poly in mface_mesh.polygons:
-                    same = mface_samebits[poly.index]
-                    gid0 = (same >> 0) & 0b11111
-                    gid1 = (same >> 5) & 0b11111
-                    gid2 = (same >> 10) & 0b11111
-
-                    group_colors = [
-                        get_group_color(gid0),
-                        get_group_color(gid1),
-                        get_group_color(gid2)
-                    ]
-
-                    for i, loop_idx in enumerate(poly.loop_indices):
-                        group_vcol_layer.data[loop_idx].color = group_colors[i]
-
-
-
-
-                if uvs:
-                    mface_mesh.uv_layers.new(name="UVMap")
-                    uv_layer = mface_mesh.uv_layers.active.data
-                    for poly in mface_mesh.polygons:
-                        for loop_index in range(poly.loop_start, poly.loop_start + poly.loop_total):
-                            v_idx = mface_mesh.loops[loop_index].vertex_index
-                            uv_layer[loop_index].uv = uvs[v_idx]
-
-                mface_obj = bpy.data.objects.new("MFace_Mesh", mface_mesh)
-                context.collection.objects.link(mface_obj)
-                mface_obj.parent = armature_obj
-                mface_obj["tr7ae_is_mface"] = True
-
-                # Armature modifier and bone weights
-                mod = mface_obj.modifiers.new(name="Armature", type='ARMATURE')
-                mod.object = armature_obj
-
-                for i in range(len(bones)):
-                    mface_obj.vertex_groups.new(name=f"Bone_{i}")
-
-                for i, seg in enumerate(segments):
-                    vg = mface_obj.vertex_groups.get(f"Bone_{seg}")
-                    if vg:
-                        vg.add([i], 1.0, 'REPLACE')
-
-                for first_vertex, last_vertex, index, weight_index, weight in virtsegment_data:
-                    vg_primary = mface_obj.vertex_groups.get(f"Bone_{index}")
-                    vg_secondary = mface_obj.vertex_groups.get(f"Bone_{weight_index}")
-                    if vg_primary and vg_secondary:
-                        for v in range(first_vertex, last_vertex + 1):
-                            if v < len(verts):
-                                vg_secondary.add([v], weight, 'REPLACE')
-                                vg_primary.add([v], 1.0 - weight, 'ADD')
-
+                drying_groups_by_vertex[v0] = gid0
+                drying_groups_by_vertex[v1] = gid1
+                drying_groups_by_vertex[v2] = gid2
 
         for mesh_index, (chunk_verts, chunk_faces, chunk_uvs, chunk_normals, chunk_segments, draw_group, chunk_vert_map, texture_id, blend_value, unknown_1, unknown_2, single_sided, texture_wrap, unknown_3, unknown_4, flat_shading, sort_z, stencil_pass, stencil_func, alpha_ref) in enumerate(mesh_chunks):
             mesh = bpy.data.meshes.new(f"TR7AE_Mesh_{mesh_index}")
             mesh.from_pydata(chunk_verts, [], chunk_faces)
             mesh.update()
+
+            # Now create the MFace vertex color layer
+            if drying_groups_by_vertex:
+                vcol = mesh.vertex_colors.new(name="MFace")
+
+                for poly in mesh.polygons:
+                    for loop_idx in poly.loop_indices:
+                        vert_idx = mesh.loops[loop_idx].vertex_index
+
+                        # Get original index via inverse map
+                        original_idx = next((k for k, v in chunk_vert_map.items() if v == vert_idx), None)
+                        gid = drying_groups_by_vertex.get(original_idx, 0)
+
+                        random.seed(gid)
+                        color = (random.random(), random.random(), random.random(), 1.0)
+                        vcol.data[loop_idx].color = color
+
             if vertex_colors:
                 color_layer = mesh.vertex_colors.new(name="Color")
                 color_data = color_layer.data
@@ -5676,6 +5611,81 @@ def sync_model_target_properties(scene):
         obj.tr7ae_modeltarget.ry = rot.y
         obj.tr7ae_modeltarget.rz = rot.z
 
+def simulate_cloth_on_frame(scene):
+    import numpy as np
+    import mathutils
+
+    obj = bpy.data.objects.get("ClothStrip")
+    if not obj or "cloth_points" not in obj or not hasattr(obj, "tr7ae_distrules"):
+        return
+
+    mesh = obj.data
+    if not mesh or len(obj.cloth_points) != len(mesh.vertices):
+        return
+
+    num_points = len(obj.cloth_points)
+    dt = 1 / scene.render.fps
+    gravity = mathutils.Vector((0, 0, -999999.0))  # faster fall
+    damping = 0.1
+    stiffness = 1
+    iterations = 40
+
+    # Initialize simulation state
+    if scene.frame_current == 1 or cloth_sim_state.get("positions") is None:
+        positions = np.array([v.co for v in mesh.vertices])
+        velocities = np.zeros_like(positions)
+        cloth_sim_state["positions"] = positions
+        cloth_sim_state["velocities"] = velocities
+        cloth_sim_state["last_frame"] = -1
+    else:
+        positions = cloth_sim_state["positions"]
+        velocities = cloth_sim_state["velocities"]
+
+    if cloth_sim_state["last_frame"] == scene.frame_current:
+        return  # Avoid duplicate update
+
+    # Apply gravity and damping
+    for i, pt in enumerate(obj.cloth_points):
+        if pt.flags not in (1, 5):  # not collision or pinned
+            velocities[i] *= damping
+            velocities[i] += np.array(gravity) * dt
+            positions[i] += velocities[i] * dt
+
+    # Enforce distance constraints
+    for _ in range(iterations):
+        for rule in obj.tr7ae_distrules:
+            i, j = rule.point0, rule.point1
+            if i >= num_points or j >= num_points or i == j:
+                continue
+
+            pi = positions[i]
+            pj = positions[j]
+            delta = pj - pi
+            dist = np.linalg.norm(delta)
+            if dist == 0:
+                continue
+
+            direction = delta / dist
+            # Use mesh-based rest length from initial state
+            rest_length = np.linalg.norm(mesh.vertices[i].co - mesh.vertices[j].co)
+            diff = dist - rest_length
+            correction = stiffness * 0.5 * diff * direction
+
+            if obj.cloth_points[i].flags not in (1, 5):
+                positions[i] += correction
+            if obj.cloth_points[j].flags not in (1, 5):
+                positions[j] -= correction
+
+    # Update vertex positions
+    for i, v in enumerate(mesh.vertices):
+        v.co = positions[i].tolist()
+
+    mesh.update()
+    cloth_sim_state["positions"] = positions
+    cloth_sim_state["velocities"] = velocities
+    cloth_sim_state["last_frame"] = scene.frame_current
+
+
 
 
 def register():
@@ -5725,6 +5735,9 @@ def register():
         sync_hmarker_transforms, sync_hbox_transforms,
         sync_hcapsule_transforms
     ]
+
+    if simulate_cloth_on_frame not in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.append(simulate_cloth_on_frame)
 
     for handler in handlers:
         if handler not in bpy.app.handlers.depsgraph_update_post:
@@ -5782,6 +5795,9 @@ def unregister():
         TR7AE_HBoxInfo, TR7AE_HCapsuleInfo, TR7AE_SphereInfo,
         ClothPointData, DistRuleData, ClothJointMapData
     ]
+
+    if simulate_cloth_on_frame in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(simulate_cloth_on_frame)
 
     for cls in classes:
         bpy.utils.unregister_class(cls)
