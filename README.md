@@ -34,6 +34,8 @@ The addon is currently capable of importing cloth physics data, however nothing 
 - Write vertices from face corners instead of actual vertex data. This will fix issues such as UV bleeding when exporting a model with removed double vertices
 - Write Markups
 - Cloth export
+- Level Import/Export
+- Better handling of MFace data (currently kinda botched)
 
 ## Known limits
 
