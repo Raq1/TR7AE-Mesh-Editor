@@ -16,7 +16,8 @@ In comparision to the Noesis plugin I previously made 3 years ago, this Blender 
 - Material and texture import, including live editing Blending mode
 - Target and Markup import/ Target export
 - Adding HInfo Components to bones
-- PCD > DDS, Image > PCD conversion
+- PCD > Image, Image > PCD conversion
+- RAW > Image, Image > RAW conversion
 
 (Example of vertex colors import and export)
 ![image](https://github.com/user-attachments/assets/d091a715-27c8-499d-a7cd-52276eb7cd7a)
