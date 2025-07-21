@@ -35,7 +35,7 @@ The addon is currently capable of importing cloth physics data, however nothing 
 - Write Markups
 - Cloth export
 - Level Import/Export
-- Better handling of MFace data (currently kinda botched)
+- Better handling of MFace data
 
 ## Known limits
 
