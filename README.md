@@ -1,5 +1,5 @@
-# TR7AE-Mesh-Editor
-Blender addon for import/export of Tomb Raider Legend/Anniversary models
+# TRLAU-Mesh-Editor
+Blender addon for import/export of Tomb Raider Legend/Anniversary/Underworld models and animations
 
 ![image](https://github.com/user-attachments/assets/e7ab59bf-9154-4941-a179-57b487745039)
 
@@ -7,6 +7,7 @@ In comparision to the Noesis plugin I previously made 3 years ago, this Blender 
 
 ## Features include
 
+- Animation import/export
 - HInfo import/export such as HBox, HSphere, HMarkers and HCapsules
 - HInfo live editing such as position, rotation and scale (where applicable) and export
 - Export is no longer limited to character models only/will no longer cause issues on scene objects/props/vehicles and such
