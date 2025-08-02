@@ -10,32 +10,27 @@ bl_info = {
 }
 
 import bpy
+from bpy.app.handlers import persistent
+from bpy.types import Operator, OperatorFileListElement, AddonPreferences, Panel
+from bpy.props import IntProperty, FloatVectorProperty, CollectionProperty, PointerProperty, StringProperty, CollectionProperty, EnumProperty
 import struct
+import math
 from math import radians
-from mathutils import Vector, Quaternion
+from mathutils import Vector, Quaternion, Matrix, Euler
 import random
 import io
+from io import BytesIO
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List
-from bpy.types import Operator, Panel
-from bpy.props import StringProperty
-from mathutils import Matrix
 import tempfile
-from bpy.app.handlers import persistent
-from bpy.types import Operator, OperatorFileListElement, AddonPreferences
-from bpy.props import IntProperty, FloatVectorProperty, CollectionProperty, PointerProperty
-from bpy.props import StringProperty, CollectionProperty
 import os
 import subprocess
 import bmesh
-from bpy.props import EnumProperty
-import bpy
-from io import BytesIO
 import mathutils
-from mathutils import Euler
 import numpy as np
-import math
+from typing import NamedTuple, List
+from enum import IntEnum
+import re
 
 cloth_sim_state = {
     "positions": None,
@@ -43,10 +38,10 @@ cloth_sim_state = {
     "last_frame": -1
 }
 
-def is_power_of_two(n):
+def is_power_of_two(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
 
-def convert_dds_to_pcd(dds_path, output_pcd_path, texture_id=None):
+def convert_dds_to_pcd(dds_path: str | Path, output_pcd_path: str, texture_id: int | None = None):
     dds_path = Path(dds_path)
     with open(dds_path, "rb") as f:
         header = f.read(128)
@@ -167,7 +162,7 @@ def collect_model_targets():
             ))
     return targets
 
-def collect_and_sort_mesh_vertices(armature):
+def collect_and_sort_mesh_vertices(armature: bpy.types.Object):
     from collections import defaultdict
 
     meshes = [obj for obj in armature.children
@@ -789,7 +784,7 @@ class TR7AE_OT_ExportOldGenModel(Operator):
                             pivot_vec = -pivot_vec
 
                         return (pivot_vec.x, pivot_vec.y, pivot_vec.z, 1.0)
-                    
+
                     pivot = compute_virtual_segment_pivot(b0, b1, bones, write_bone_index=b1)
                     mb.write(struct.pack("<4f", *pivot))
 
@@ -1520,7 +1515,7 @@ def create_model_target_visuals(targets, armature_obj):
 
         arm_mod = torus.modifiers.new(name="Armature", type='ARMATURE')
         arm_mod.object = armature_obj
-    
+
 class TR7AE_SectionPaths(bpy.types.PropertyGroup):
     main_file_index: bpy.props.IntProperty(
         name="Main Section Index",
@@ -1730,7 +1725,7 @@ class NextGenMaterialProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=1000000.0
     )
-    
+
     specular_power: bpy.props.FloatProperty(
         name="Specular Power",
         description="Controls the shininess of the material",
@@ -1765,7 +1760,7 @@ class NextGenMaterialProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=1.0
     )
-    
+
     rim_light_intensity: bpy.props.FloatProperty(
         name="Rim Light Intensity",
         description="LOREM IPSUM",
@@ -1887,7 +1882,7 @@ def get_gnc_data_offset(filepath):
         packed_data = struct.unpack("<I", f.read(4))[0]
         num_relocations = (packed_data >> 8) & 0xFFFFFF
         return 24 + (num_relocations * 8)
-    
+
 import struct
 import bpy
 from mathutils import Vector
@@ -2657,12 +2652,12 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
             pad = read("<b")[0]
             segment = read("<h")[0]
             uvx_raw, uvy_raw = read("<HH")
-            
+
             uvx = ushort_to_float(uvx_raw)
             uvy = 1.0 - ushort_to_float(uvy_raw)
 
             uvs.append((uvx, uvy))
-            
+
             base_pos = Vector((vx * scale_vals[0], vy * scale_vals[1], vz * scale_vals[2]))
             bone_index = virtsegment_map.get(i, segment)
             if 0 <= bone_index < len(bones):
@@ -3234,7 +3229,7 @@ class TR7AE_OT_ImportModel(Operator, ImportHelper):
                 pattern = os.path.join(folder, f"*_{hex_id}.pcd")
                 matches = glob.glob(pattern)
                 return matches[0] if matches else None
-            
+
             folder = os.path.dirname(filepath)
             pcd_path = find_texture_by_id(folder, texture_id)
 
@@ -4708,7 +4703,7 @@ class TR7AE_OT_ImportNextGenModel(bpy.types.Operator):
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
-    
+
 class TR7AE_OT_ExportNextGenModel(bpy.types.Operator):
     bl_idname = "tr7ae.export_nextgen_model"
     bl_label = "Export TR7AE Next Gen Model"
@@ -4718,7 +4713,7 @@ class TR7AE_OT_ExportNextGenModel(bpy.types.Operator):
     def execute(self, context):
         self.report({'INFO'}, "Export TR7AE Next Gen Model (not yet implemented)")
         return {'FINISHED'}
-    
+
 def decode_normal_ubyte4(data):
     return tuple((b / 255.0) * 2.0 - 1.0 for b in struct.unpack_from('<4B', data[:4]))
 
@@ -5027,7 +5022,7 @@ class ImportUnderworldGOLModel(bpy.types.Operator, ImportHelper):
                         f3_section_header_end, _ = self.read_section_header_and_find_offset(f3)
                         final_seek = f3_section_header_end + external_ref_offset
                         f3.seek(final_seek)
-                        
+
                         bone_count_pos = f3.tell()
                         bone_count = struct.unpack('<I', f3.read(4))[0]
                         pointer_after_bone_count = f3.tell()
@@ -5523,7 +5518,7 @@ class ImportUnderworldGOLModel(bpy.types.Operator, ImportHelper):
         self.filter_glob = "*.obj"
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
-    
+
 class ExportUnderworldModel(bpy.types.Operator):
     bl_idname = "tru.export_trugol_model"
     bl_label = "Export TRU Model"
@@ -5532,7 +5527,7 @@ class ExportUnderworldModel(bpy.types.Operator):
     def execute(self, context):
         self.report({'INFO'}, "Export TRU Model (not yet implemented)")
         return {'FINISHED'}
-    
+
 class ImportUnderworldGOLAnimation(bpy.types.Operator):
     bl_idname = "tru.import_trugol_animation"
     bl_label = "Import TRU Animation"
@@ -5766,12 +5761,14 @@ class ImportUnderworldGOLAnimation(bpy.types.Operator):
                                 else:
                                     mat = bone.bone.matrix_local.inverted() @ mat
                                 local_vec = mat.to_translation()
-                                fcurve.keyframe_points.insert(frame=frame, value=local_vec[idx])
+                                keyframe = fcurve.keyframe_points.insert(frame=frame, value=local_vec[idx])
+                                keyframe.interpolation = "LINEAR"
                         else:
                             path = f'pose.bones["{bone_name}"].{"rotation_euler" if kind=="rotation" else kind}'
                             fcurve = action.fcurves.new(data_path=path, index=idx)
                             for frame, value in keyframes:
-                                fcurve.keyframe_points.insert(frame=frame, value=value)
+                                keyframe = fcurve.keyframe_points.insert(frame=frame, value=value)
+                                keyframe.interpolation = "LINEAR"
 
                 context.scene.frame_start = 0
                 context.scene.frame_end = final_frame
@@ -5794,7 +5791,7 @@ class ImportUnderworldGOLAnimation(bpy.types.Operator):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
-    
+
 class ExportUnderworldAnimation(bpy.types.Operator):
     bl_idname = "tru.export_trugol_animation"
     bl_label = "Export TRU Animation"
@@ -6107,7 +6104,7 @@ class TR7AE_OT_ToggleHSpheres(bpy.types.Operator):
         action = "Hidden" if should_hide else "Shown"
         self.report({'INFO'}, f"{action} {len(hspheres)} HSphere(s)")
         return {'FINISHED'}
-    
+
 class TR7AE_OT_ToggleHCapsules(bpy.types.Operator):
     bl_idname = "tr7ae.toggle_hcapsules"
     bl_label = "Toggle HCapsules Visibility"
@@ -6127,7 +6124,7 @@ class TR7AE_OT_ToggleHCapsules(bpy.types.Operator):
         action = "Hidden" if should_hide else "Shown"
         self.report({'INFO'}, f"{action} {len(hcapsules)} HCapsules(s)")
         return {'FINISHED'}
-    
+
 class TR7AE_OT_ClearTextureCache(bpy.types.Operator):
     bl_idname = "tr7ae.clear_texture_cache"
     bl_label = "Clear Texture Cache"
@@ -6237,7 +6234,7 @@ class TR7AE_PT_Tools(Panel):
         bone = context.active_pose_bone
         if not bone:
             return
-    
+
 def is_image_fully_opaque_blender(image_path):
     try:
         img = bpy.data.images.load(str(image_path), check_existing=False)
@@ -6255,7 +6252,7 @@ def is_image_fully_opaque_blender(image_path):
         return fully_opaque
     except:
         return False
-        
+
 class TR7AE_OT_ConvertImageToPCD(bpy.types.Operator):
     bl_idname = "tr7ae.convert_image_to_pcd"
     bl_label = "Convert Image(s) to PCD"
@@ -6325,7 +6322,7 @@ class TR7AE_OT_ConvertImageToPCD(bpy.types.Operator):
         self.filter_glob = "*.dds;*.png;*.tga;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.hdr;*.ppm"
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
-    
+
 class TR7AE_OT_ConvertPCDToImage(bpy.types.Operator):
     bl_idname = "tr7ae.convert_pcd_to_image"
     bl_label = "Convert PCD to Image"
@@ -6445,7 +6442,7 @@ class TR7AE_OT_ConvertPCDToImage(bpy.types.Operator):
         self.layout.prop(self, "format")
 
 
-    
+
 class TR7AE_OT_ConvertRAWToImage(Operator):
     bl_idname = "tr7ae.convert_raw_to_image"
     bl_label = "Convert RAW(s) to Image"
@@ -6723,6 +6720,81 @@ class TR7AE_Preferences(AddonPreferences):
 
 #Tomb Raider Legend/Anniversary Animation Importing (PC, PS2, PS3, Wii)
 
+class Tr7Keyframe:
+    frame: int
+    value: float
+
+    def __init__(self, frame: int, value: float) -> None:
+        self.frame = frame
+        self.value = value
+
+class Tr7Track:
+    keyframes: list[Tr7Keyframe]
+
+    def __init__(self, keyframes: list[Tr7Keyframe] | None = None) -> None:
+        self.keyframes = keyframes or []
+
+    def get_value_at_frame(self, frame: int) -> float:
+        if frame <= self.keyframes[0].frame:
+            return self.keyframes[0].value
+
+        if frame >= self.keyframes[-1].frame:
+            return self.keyframes[-1].value
+
+        for i in range(len(self.keyframes) - 1):
+            left_keyframe  = self.keyframes[i]
+            right_keyframe = self.keyframes[i + 1]
+            if left_keyframe.frame <= frame and frame <= right_keyframe.frame:
+                subframe = (frame - left_keyframe.frame) / (right_keyframe.frame - left_keyframe.frame)
+                return left_keyframe.value + (right_keyframe.value - left_keyframe.value) * subframe
+
+        return 0
+
+    def set_value_at_frame(self, frame: int, value: float) -> None:
+        for i, keyframe in enumerate(self.keyframes):
+            if keyframe.frame == frame:
+                keyframe.value = value
+                return
+
+            if keyframe.frame > frame:
+                self.keyframes.insert(i, Tr7Keyframe(frame, value))
+                return
+
+        self.keyframes.append(Tr7Keyframe(frame, value))
+
+class Tr7TransformAnimation:
+    axis_tracks: list[Tr7Track | None]
+
+    def __init__(self) -> None:
+        self.axis_tracks = [None, None, None]
+
+    def get_keyframe_frames(self) -> list[int]:
+        frames = set[int]()
+        for axis_track in self.axis_tracks:
+            if axis_track is not None:
+                frames.update([keyframe.frame for keyframe in axis_track.keyframes])
+
+        return sorted(frames)
+
+    def get_vector_at_frame(self, frame: int, default_axis_value: float) -> Vector:
+        result = Vector([default_axis_value] * len(self.axis_tracks))
+        for axis, axis_track in enumerate(self.axis_tracks):
+            if axis_track is not None:
+                result[axis] = axis_track.get_value_at_frame(frame)
+
+        return result
+
+class Tr7TransformType(IntEnum):
+    ROTATION = 0
+    SCALE = 1
+    LOCATION = 2
+
+class Tr7BoneAnimation:
+    transforms: list[Tr7TransformAnimation | None]
+
+    def __init__(self) -> None:
+        self.transforms = [None, None, None]
+
 class TR7AE_OT_ImportAnimation(bpy.types.Operator):
     bl_idname = "tr7ae.import_animation"
     bl_label = "Import Animation"
@@ -6732,12 +6804,6 @@ class TR7AE_OT_ImportAnimation(bpy.types.Operator):
     filter_glob: bpy.props.StringProperty(default="*.ani", options={'HIDDEN'})
 
     def execute(self, context):
-        import struct
-        from pathlib import Path
-        from io import BytesIO
-        import bpy
-        import mathutils
-
         if not context.active_object or context.active_object.type != 'ARMATURE':
             self.report({'ERROR'}, "Select an Armature to import animation onto.")
             return {'CANCELLED'}
@@ -6748,231 +6814,226 @@ class TR7AE_OT_ImportAnimation(bpy.types.Operator):
             self.report({'ERROR'}, "File not found.")
             return {'CANCELLED'}
 
-        try:
-            with open(path, "rb") as f:
-                data = f.read()
+        with open(path, "rb") as f:
+            data = f.read()
 
-            # Detect endianness
-            magic = data[:4]
-            if magic == b"SECT":
-                endianness = "<"  # Little Endian
-                print(f"Imported {path.name} - PC/PS2 animation")
-            elif magic == b"TCES":
-                endianness = ">"  # Big Endian
-                print(f"Imported {path.name} - PS3/Wii animation")
-            else:
-                self.report({'ERROR'}, f"Unknown file signature: {magic}")
-                return {'CANCELLED'}
-
-            anim_id = struct.unpack_from(endianness + "h", data, 0x10)[0]
-            key_count = struct.unpack_from(endianness + "h", data, 0x32)[0]
-            time_per_key = struct.unpack_from(endianness + "h", data, 0x34)[0]
-            segment_count = struct.unpack_from(endianness + "B", data, 0x36)[0]
-            mSectionCount = struct.unpack_from(endianness + "B", data, 0x37)[0]
-            mSectionDataOffset = struct.unpack_from(endianness + "I", data, 0x38)[0]
-            track_data_offset = 0x3C
-            transform_flags = data[track_data_offset]
-
-            final_frame = key_count - 1
-
-            def parse_track_flags(data, offset, transform_flags, segment_count):
-                flags_bits = int.from_bytes(data[offset:offset + 512], 'little')
-                bit_pos = 0
-                rot_flags, scale_flags, pos_flags = [], [], []
-
-                def read_3bit_flags():
-                    nonlocal bit_pos
-                    flags = []
-                    for _ in range(segment_count):
-                        flags.append((flags_bits >> bit_pos) & 0b111)
-                        bit_pos += 3
-                    return flags
-
-                def align_byte():
-                    nonlocal bit_pos
-                    if bit_pos % 8 != 0:
-                        bit_pos += 8 - (bit_pos % 8)
-
-                if transform_flags & 0b001:
-                    rot_flags = read_3bit_flags()
-                    align_byte()
-                if transform_flags & 0b010:
-                    scale_flags = read_3bit_flags()
-                    align_byte()
-                if transform_flags & 0b100:
-                    pos_flags = read_3bit_flags()
-                    align_byte()
-
-                return rot_flags, scale_flags, pos_flags
-
-            def flags_to_axes(flag):
-                return [axis for axis, bit in zip("xyz", [1, 2, 4]) if flag & bit]
-
-            track_flags_offset = track_data_offset + 1
-            rot_flags, scale_flags, pos_flags = parse_track_flags(
-                data, track_flags_offset, transform_flags, segment_count
-            )
-
-            channel_map = []
-            for i in range(segment_count):
-                channel_map.append({
-                    "rotation": flags_to_axes(rot_flags[i]) if rot_flags else [],
-                    "scale": flags_to_axes(scale_flags[i]) if scale_flags else [],
-                    "location": flags_to_axes(pos_flags[i]) if pos_flags else [],
-                })
-
-            stream = BytesIO(data)
-            track_data_start = mSectionDataOffset + 56
-            stream.seek(track_data_start)
-
-            def read_track_data(stream, key_count):
-                header = stream.read(4)
-                if len(header) < 4:
-                    return []
-                mode, count = struct.unpack(endianness + "HH", header)
-
-                if mode == 2 and count > 0:
-                    times = [0]
-                    acc = 0
-                    for _ in range(count - 1):
-                        if stream.tell() >= len(data):
-                            return []
-                        delta = struct.unpack(endianness + "B", stream.read(1))[0]
-                        acc += delta
-                        times.append(acc)
-                    if stream.tell() % 4 != 0:
-                        stream.seek((stream.tell() + 3) & ~3)
-                    abs_val = 0.0
-                    keys = []
-                    for t in times:
-                        if stream.tell() + 4 > len(data):
-                            break
-                        delta = struct.unpack(endianness + "f", stream.read(4))[0]
-                        abs_val += delta
-                        keys.append((t, abs_val))
-                    return keys
-
-                elif mode == 1:
-                    if stream.tell() + 4 > len(data):
-                        return []
-                    val = struct.unpack(endianness + "f", stream.read(4))[0]
-                    return [(0, val)]
-
-                elif mode == 0:
-                    keys = []
-                    for i in range(key_count):
-                        if stream.tell() + 4 > len(data):
-                            break
-                        val = struct.unpack(endianness + "f", stream.read(4))[0]
-                        keys.append((i, val))
-                    return keys
-
-                else:
-                    return []
-
-            all_tracks = []
-            for bone_index, bone_flags in enumerate(channel_map):
-                bone_tracks = []
-                for kind in ["rotation", "scale", "location"]:
-                    for axis in bone_flags[kind]:
-                        keyframes = read_track_data(stream, key_count)
-                        bone_tracks.append((kind, axis, keyframes))
-                all_tracks.append(bone_tracks)
-
-            base_name = f"{path.stem}"
-            action_name = base_name
-            suffix = 1
-            while action_name in bpy.data.actions:
-                action_name = f"{base_name}_{suffix}"
-                suffix += 1
-            action = bpy.data.actions.new(name=action_name)
-            action["time_per_key"] = time_per_key
-            action.tr7ae_anim_settings.time_per_key = time_per_key
-            action["anim_id"] = anim_id
-            action.tr7ae_anim_settings.anim_id = anim_id
-
-            armature.animation_data_create()
-            armature.animation_data.action = action
-
-            context.scene.frame_set(0)
-
-            animated_flags = {
-                bone.name: {"location": set(), "rotation": set(), "scale": set()}
-                for bone in armature.pose.bones
-            }
-
-            for bone in armature.pose.bones:
-                bone_name = bone.name
-                flags = animated_flags[bone_name]
-
-                if "x" not in flags["location"]:
-                    bone.location.x = 0.0
-                if "y" not in flags["location"]:
-                    bone.location.y = 0.0
-                if "z" not in flags["location"]:
-                    bone.location.z = 0.0
-
-                if "x" not in flags["rotation"]:
-                    bone.rotation_euler.x = 0.0
-                if "y" not in flags["rotation"]:
-                    bone.rotation_euler.y = 0.0
-                if "z" not in flags["rotation"]:
-                    bone.rotation_euler.z = 0.0
-
-                if "x" not in flags["scale"]:
-                    bone.scale.x = 1.0
-                if "y" not in flags["scale"]:
-                    bone.scale.y = 1.0
-                if "z" not in flags["scale"]:
-                    bone.scale.z = 1.0
-
-            for bone_index in range(len(armature.pose.bones)):
-                armature.pose.bones[bone_index].rotation_mode = 'XYZ'
-
-            for bone_index, tracks in enumerate(all_tracks):
-                if bone_index >= len(armature.pose.bones):
-                    continue
-                bone = armature.pose.bones[bone_index]
-                bone_name = bone.name
-                for kind, axis, keyframes in tracks:
-                    if not keyframes:
-                        continue
-                    idx = "xyz".index(axis)
-
-                    if kind == "location":
-                        fcurve = action.fcurves.new(data_path=f'pose.bones["{bone_name}"].location', index=idx)
-                        for frame, value in keyframes:
-                            vec = mathutils.Vector((0.0, 0.0, 0.0))
-                            vec[idx] = value
-                            mat = mathutils.Matrix.Translation(vec)
-                            if bone.parent:
-                                mat = bone.parent.bone.matrix_local @ bone.bone.matrix_local.inverted() @ mat
-                            else:
-                                mat = bone.bone.matrix_local.inverted() @ mat
-                            local_vec = mat.to_translation()
-                            fcurve.keyframe_points.insert(frame=frame, value=local_vec[idx])
-                    else:
-                        path = f'pose.bones["{bone_name}"].{"rotation_euler" if kind=="rotation" else kind}'
-                        fcurve = action.fcurves.new(data_path=path, index=idx)
-                        for frame, value in keyframes:
-                            fcurve.keyframe_points.insert(frame=frame, value=value)
-
-            context.scene.frame_start = 0
-            context.scene.frame_end = final_frame
-            context.scene.frame_current = 0
-
-            self.report({'INFO'}, f"Imported animation '{action.name}' and set end frame to {final_frame}.")
-            return {'FINISHED'}
-
-        except Exception as e:
-            self.report({'ERROR'}, f"Failed to import animation: {e}")
+        # Detect endianness
+        magic = data[:4]
+        if magic == b"SECT":
+            endianness = "<"  # Little Endian
+            print(f"Imported {path.name} - PC/PS2 animation")
+        elif magic == b"TCES":
+            endianness = ">"  # Big Endian
+            print(f"Imported {path.name} - PS3/Wii animation")
+        else:
+            self.report({'ERROR'}, f"Unknown file signature: {magic}")
             return {'CANCELLED'}
+
+        anim_id: int                = struct.unpack_from(endianness + "h", data, 0x10)[0]
+        frame_count: int            = struct.unpack_from(endianness + "h", data, 0x32)[0]
+        time_per_frame: int         = struct.unpack_from(endianness + "h", data, 0x34)[0]
+        bone_count: int             = struct.unpack_from(endianness + "B", data, 0x36)[0]
+        mSectionCount: int          = struct.unpack_from(endianness + "B", data, 0x37)[0]
+        track_values_offset: int    = struct.unpack_from(endianness + "I", data, 0x38)[0]
+        track_data_offset           = 0x3C
+        transform_type_flags        = data[track_data_offset]
+
+        final_frame = frame_count - 1
+
+        axis_flags_offset = track_data_offset + 1
+        bone_axis_flags_per_transform_type = self.read_axis_flags(
+            data, axis_flags_offset, transform_type_flags, bone_count
+        )
+
+        stream = BytesIO(data)
+        track_data_start = 0x38 + track_values_offset
+        stream.seek(track_data_start)
+
+        bone_anims = list[Tr7BoneAnimation]()
+        for bone_index in range(bone_count):
+            bone_anim = Tr7BoneAnimation()
+            for transform_type in range(3):
+                axis_flags_for_transform_type = bone_axis_flags_per_transform_type[transform_type]
+                if axis_flags_for_transform_type is None:
+                    continue
+
+                transform_anim = Tr7TransformAnimation()
+                axis_flags = axis_flags_for_transform_type[bone_index]
+                for axis in range(3):
+                    if axis_flags & (1 << axis) != 0:
+                        transform_anim.axis_tracks[axis] = self.read_track_data(stream, endianness, frame_count)
+
+                bone_anim.transforms[transform_type] = transform_anim
+
+            bone_anims.append(bone_anim)
+
+        base_name = path.stem
+        action_name = base_name
+        suffix = 1
+        while action_name in bpy.data.actions:
+            action_name = f"{base_name}_{suffix}"
+            suffix += 1
+        bl_action = bpy.data.actions.new(name = action_name)
+        #bl_action["time_per_key"] = time_per_frame
+        bl_action.tr7ae_anim_settings.time_per_key = time_per_frame
+        #bl_action["anim_id"] = anim_id
+        bl_action.tr7ae_anim_settings.anim_id = anim_id
+
+        armature.animation_data_create()
+        armature.animation_data.action = bl_action
+
+        for bone in armature.pose.bones:
+            bone.location = (0, 0, 0)
+            bone.rotation_mode = "AXIS_ANGLE"
+            bone.rotation_axis_angle = (0, 0, 1, 0)
+            bone.scale = (1, 1, 1)
+
+        for bone_index, bone_anim in enumerate(bone_anims):
+            if bone_index >= len(armature.pose.bones):
+                break
+
+            bl_bone = armature.pose.bones[bone_index]
+
+            location_anim = bone_anim.transforms[Tr7TransformType.LOCATION]
+            if location_anim is not None:
+                self.create_bone_location_curves(bl_action, bl_bone, location_anim)
+
+            rotation_anim = bone_anim.transforms[Tr7TransformType.ROTATION]
+            if rotation_anim is not None:
+                self.create_bone_rotation_curves(bl_action, bl_bone, rotation_anim)
+
+            scale_anim = bone_anim.transforms[Tr7TransformType.SCALE]
+            if scale_anim is not None:
+                self.create_bone_scale_curves(bl_action, bl_bone, scale_anim)
+
+        if hasattr(bl_action, "slots") and len(bl_action.slots) > 0:
+            armature.animation_data.action_slot = bl_action.slots[0]
+
+        context.scene.frame_start = 0
+        context.scene.frame_end = final_frame
+        context.scene.frame_current = 0
+
+        self.report({'INFO'}, f"Imported animation '{bl_action.name}' and set end frame to {final_frame}.")
+        return {'FINISHED'}
+
+    def create_bone_location_curves(self, bl_action: bpy.types.Action, bl_bone: bpy.types.PoseBone, tr_location_anim: Tr7TransformAnimation):
+        for axis in range(3):
+            tr_axis_track = tr_location_anim.axis_tracks[axis]
+            if tr_axis_track is None:
+                continue
+
+            bl_curve = bl_action.fcurves.new(data_path = f'pose.bones["{bl_bone.name}"].location', index = axis)
+            for tr_keyframe in tr_axis_track.keyframes:
+                vec = Vector((0.0, 0.0, 0.0))
+                vec[axis] = tr_keyframe.value
+
+                mat = mathutils.Matrix.Translation(vec)
+                if bl_bone.parent:
+                    mat = bl_bone.parent.bone.matrix_local @ bl_bone.bone.matrix_local.inverted() @ mat
+                else:
+                    mat = bl_bone.bone.matrix_local.inverted() @ mat
+
+                local_vec = mat.to_translation()
+                bl_keyframe = bl_curve.keyframe_points.insert(frame = tr_keyframe.frame, value = local_vec[axis])
+                bl_keyframe.interpolation = "LINEAR"
+
+    def create_bone_rotation_curves(self, bl_action: bpy.types.Action, bl_bone: bpy.types.PoseBone, tr_rotation_anim: Tr7TransformAnimation):
+        data_path = f'pose.bones["{bl_bone.name}"].rotation_axis_angle'
+        bl_axis_curves = list[bpy.types.FCurve]()
+        for coord in range(4):
+            bl_axis_curve = bl_action.fcurves.new(data_path = data_path, index = coord)
+            bl_axis_curves.append(bl_axis_curve)
+
+        for frame in tr_rotation_anim.get_keyframe_frames():
+            rotation_axis = tr_rotation_anim.get_vector_at_frame(frame, 0)
+            angle = rotation_axis.length
+            rotation_axis.normalize()
+            for coord, value in enumerate((angle, rotation_axis.x, rotation_axis.y, rotation_axis.z)):
+                bl_keyframe = bl_axis_curves[coord].keyframe_points.insert(frame = frame, value = value)
+                bl_keyframe.interpolation = "LINEAR"
+
+    def create_bone_scale_curves(self, bl_action: bpy.types.Action, bl_bone: bpy.types.PoseBone, tr_scale_anim: Tr7TransformAnimation):
+        data_path = f'pose.bones["{bl_bone.name}"].scale'
+
+        for axis in range(3):
+            tr_axis_track = tr_scale_anim.axis_tracks[axis]
+            if tr_axis_track is None:
+                continue
+
+            bl_fcurve = bl_action.fcurves.new(data_path = data_path, index = axis)
+            for tr_keyframe in tr_axis_track.keyframes:
+                bl_keyframe = bl_fcurve.keyframe_points.insert(frame = tr_keyframe.frame, value = tr_keyframe.value)
+                bl_keyframe.interpolation = "LINEAR"
+
+    def read_axis_flags(self, data: bytes, offset: int, transform_type_flags: int, bone_count: int) -> list[list[int] | None]:
+        axis_flag_bits = int.from_bytes(data[offset:offset + 512], 'little')
+        bit_pos = 0
+
+        axis_flags_per_transform_type: list[list[int] | None] = [None, None, None]
+
+        for transform_type in range(3):
+            if transform_type_flags & (1 << transform_type) == 0:
+                continue
+
+            axis_flags = list[int]()
+            for _ in range(bone_count):
+                axis_flags.append((axis_flag_bits >> bit_pos) & 0b111)
+                bit_pos += 3
+
+            if bit_pos % 8 != 0:
+                bit_pos += 8 - (bit_pos % 8)
+
+            axis_flags_per_transform_type[transform_type] = axis_flags
+
+        return axis_flags_per_transform_type
+
+    def read_track_data(self, stream: BytesIO, endianness: str, key_count: int) -> Tr7Track:
+        header = stream.read(4)
+        if len(header) < 4:
+            return []
+
+        mode, num_keyframes = struct.unpack(endianness + "HH", header)
+
+        if mode == 2 and num_keyframes > 0:
+            absolute_frames = [0]
+            absolute_frame = 0
+            for _ in range(num_keyframes - 1):
+                relative_frame: int = struct.unpack(endianness + "B", stream.read(1))[0]
+                absolute_frame += relative_frame
+                absolute_frames.append(absolute_frame)
+
+            if stream.tell() % 4 != 0:
+                stream.seek((stream.tell() + 3) & ~3)
+
+            absolute_value = 0.0
+            keys = []
+            for absolute_frame in absolute_frames:
+                relative_value: float = struct.unpack(endianness + "f", stream.read(4))[0]
+                absolute_value += relative_value
+                keys.append(Tr7Keyframe(absolute_frame, absolute_value))
+
+            return Tr7Track(keys)
+
+        elif mode == 1:
+            val: float = struct.unpack(endianness + "f", stream.read(4))[0]
+            return Tr7Track([Tr7Keyframe(0, val)])
+
+        elif mode == 0:
+            keys = []
+            for i in range(key_count):
+                val: float = struct.unpack(endianness + "f", stream.read(4))[0]
+                keys.append(Tr7Keyframe(i, val))
+
+            return Tr7Track(keys)
+
+        else:
+            return Tr7Track()
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
-    
+
 class TR7AE_AnimationSettings(bpy.types.PropertyGroup):
     time_per_key: bpy.props.IntProperty(
         name="Time Per Key",
@@ -6996,197 +7057,229 @@ class TR7AE_OT_ExportAnimation(bpy.types.Operator):
     filter_glob: bpy.props.StringProperty(default="*.ani", options={'HIDDEN'})
 
     def execute(self, context):
-        armature = context.active_object
-        if not armature or armature.type != 'ARMATURE':
+        bl_armature_obj = context.active_object
+        if not bl_armature_obj or bl_armature_obj.type != 'ARMATURE':
             self.report({'ERROR'}, "Select an armature to export from.")
             return {'CANCELLED'}
 
-        if not armature.animation_data or not armature.animation_data.action:
+        if not bl_armature_obj.animation_data or not bl_armature_obj.animation_data.action:
             self.report({'ERROR'}, "No active action found on armature.")
             return {'CANCELLED'}
 
-        active_action = armature.animation_data.action
-        try:
-            # Prepare tracks and quaternion storage
-            bone_names = [b.name for b in armature.pose.bones]
-            bone_tracks = {name: {'location': [[], [], []], 'rotation': [[], [], []], 'scale': [[], [], []]} for name in bone_names}
-            quaternion_frames = {name: {} for name in bone_names}
-            keyframe_set = set()
+        bl_action = bl_armature_obj.animation_data.action
 
-            # Collect raw keyframe data
-            for fcurve in active_action.fcurves:
-                path = fcurve.data_path
-                if not path.startswith("pose.bones"): continue
-
-                bone_name = path.split('"')[1]
-                prop = path.split('.')[-1]
-                idx = fcurve.array_index
-
-                # Gather quaternion components
-                if prop == 'rotation_quaternion':
-                    for kp in fcurve.keyframe_points:
-                        frame = int(kp.co[0]); value = kp.co[1]
-                        keyframe_set.add(frame)
-                        qdict = quaternion_frames[bone_name].setdefault(frame, [None]*4)
-                        qdict[idx] = value
+        bone_anims = self.collect_bone_anims(bl_armature_obj, bl_action)
+        transform_type_flags = 0
+        all_axis_flags = list[int]()
+        for transform_type in range(3):
+            transform_axis_flags = 0
+            for bone_index, bone_anim in enumerate(bone_anims):
+                transform_anim = bone_anim.transforms[transform_type]
+                if transform_anim is None:
                     continue
 
-                # Map other props
-                prop_map = {'location': 'location', 'scale': 'scale', 'rotation_euler': 'rotation'}
-                if prop not in prop_map: continue
-                mapped = prop_map[prop]
+                bone_axis_flags = 0
+                for axis in range(3):
+                    if transform_anim.axis_tracks[axis] is not None:
+                        bone_axis_flags |= 1 << axis
 
-                for kp in fcurve.keyframe_points:
-                    frame = int(kp.co[0]); value = kp.co[1]
-                    keyframe_set.add(frame)
+                transform_axis_flags |= bone_axis_flags << (3 * bone_index)
 
-                    if mapped == 'location':
-                        pb = armature.pose.bones[bone_name]
-                        vec = mathutils.Vector((0.0, 0.0, 0.0))
-                        vec[idx] = value
-                        mat = mathutils.Matrix.Translation(vec)
-                        if pb.parent:
-                            mat = pb.bone.matrix_local @ pb.parent.bone.matrix_local.inverted() @ mat
+            if transform_axis_flags == 0:
+                continue
+
+            transform_type_flags |= 1 << transform_type
+            all_axis_flags.append(transform_axis_flags)
+
+        # Frame setup
+        frame_start, frame_end = map(int, bl_action.frame_range)
+        frame_count = frame_end + 1 - frame_start
+        time_per_frame = int(bl_action.tr7ae_anim_settings.time_per_key)
+        anim_id = int(bl_action.tr7ae_anim_settings.anim_id)
+
+        # --- Header ---
+        header = bytearray(b'\x00'*0x18)
+        header += struct.pack("<h", anim_id)
+        header += struct.pack("<h", frame_count)
+        header += struct.pack("<h", time_per_frame)
+        header += struct.pack("<B", len(bone_anims))
+        header += struct.pack("<B", 1)
+
+        track_data_off_pos = len(header)
+        header += struct.pack("<I", 0xDEADBEEF)
+        header += struct.pack("<B", transform_type_flags)
+        num_axis_bits = (len(bone_anims) * 3 + 7) & ~7
+        for transform_axis_flags in all_axis_flags:
+            header += transform_axis_flags.to_bytes(num_axis_bits // 8, "little")
+
+        while len(header) % 4 != 0:
+            header += b"\x00"
+
+        header[track_data_off_pos:track_data_off_pos+4] = struct.pack("<I", len(header) - track_data_off_pos)
+
+        section_body = bytearray(header)
+
+        # --- Track Data ---
+        for bone_anim in bone_anims:
+            for transform_anim in bone_anim.transforms:
+                if transform_anim is None:
+                    continue
+
+                for axis_track in transform_anim.axis_tracks:
+                    if axis_track is None:
+                        continue
+
+                    # Mode 1: constant value for full frame range
+                    if len(set([keyframe.value for keyframe in axis_track.keyframes])) == 1:
+                        section_body += struct.pack("<HH", 1, 0)
+                        section_body += struct.pack("<f", axis_track.keyframes[0].value)
+                        continue
+
+                    # Mode 0: keyframe for every frame
+                    if len(axis_track.keyframes) == frame_count:
+                        section_body += struct.pack("<HH", 0, frame_count)
+                        for tr_keyframe in axis_track.keyframes:
+                            section_body += struct.pack("<f", tr_keyframe.value)
+
+                        continue
+
+                    # Mode 2: sparse deltas
+                    section_body += struct.pack("<HH", 2, len(axis_track.keyframes))
+                    relative_frames = list[int]()
+                    relative_values = list[float]()
+                    for i in range(len(axis_track.keyframes)):
+                        if i == 0:
+                            relative_values.append(axis_track.keyframes[i].value)
                         else:
-                            mat = pb.bone.matrix_local @ mat
-                        value = mat.to_translation()[idx]
+                            relative_values.append(axis_track.keyframes[i].value - axis_track.keyframes[i - 1].value)
+                            relative_frames.append(axis_track.keyframes[i].frame - axis_track.keyframes[i - 1].frame)
 
-                    bone_tracks[bone_name][mapped][idx].append((frame, value))
+                    section_body += struct.pack(f"<{len(relative_frames)}B", *relative_frames)
+                    while len(section_body) % 4 != 0:
+                        section_body += b"\x00"
 
-            # Convert quaternions to Euler per-axis
-            for bone_name, frames in quaternion_frames.items():
-                for frame, comps in frames.items():
-                    if None in comps: continue
-                    quat = mathutils.Quaternion(comps)
-                    euler = quat.to_euler('XYZ')
-                    for ax in range(3):
-                        bone_tracks[bone_name]['rotation'][ax].append((frame, euler[ax]))
+                    section_body += struct.pack(f"<{len(relative_values)}f", *relative_values)
 
-            # Frame setup
-            frame_start, frame_end = map(int, active_action.frame_range)
-            keyframes = list(range(frame_start, frame_end + 1))
-            key_count = len(keyframes)
-            frame_index_map = {f: i for i, f in enumerate(keyframes)}
-            time_per_key = int(active_action.tr7ae_anim_settings.time_per_key)
-            anim_id = int(active_action.tr7ae_anim_settings.anim_id)
+        # --- Write file ---
+        with open(self.filepath, 'wb') as f:
+            f.write(b"SECT")
+            f.write(struct.pack("<I", len(section_body)))
+            f.write(struct.pack("<I", 2))           # Section type = animation
+            f.write(struct.pack("<I", 0))           # Number of relocations
+            f.write(struct.pack("<I", anim_id))
+            f.write(struct.pack("<I", 0xFFFFFFFF))  # Specialization mask
 
-            # Channel flags
-            segment_count = len(bone_names)
-            channel_flags = {'rotation': [], 'scale': [], 'location': []}
-            for bn in bone_names:
-                for kind in channel_flags:
-                    flag = 0
-                    for ax in range(3):
-                        if bone_tracks[bn][kind][ax]: flag |= (1 << ax)
-                    channel_flags[kind].append(flag)
+            f.write(section_body)
 
-            transform_flags = 0
-            if any(channel_flags['rotation']): transform_flags |= 0b001
-            if any(channel_flags['scale']):    transform_flags |= 0b010
-            if any(channel_flags['location']): transform_flags |= 0b100
+        self.report({'INFO'}, f"Exported action '{bl_action.name}' with {frame_count} frames.")
+        return {'FINISHED'}
 
-            def pack_3bit_flags(flags_list):
-                packed = bytearray(); acc = 0; bitpos = 0
-                for f in flags_list:
-                    acc |= ((f & 0b111) << bitpos)
-                    bitpos += 3
-                    while bitpos >= 8:
-                        packed.append(acc & 0xFF)
-                        acc >>= 8; bitpos -= 8
-                if bitpos: packed.append(acc & 0xFF)
-                return packed
+    def collect_bone_anims(self, bl_armature_obj: bpy.types.Object, bl_action: bpy.types.Action) -> list[Tr7BoneAnimation]:
+        tr_bone_anims = list[Tr7BoneAnimation]()
+        for bl_bone in bl_armature_obj.pose.bones:
+            tr_bone_anims.append(Tr7BoneAnimation())
 
-            # --- Header ---
-            header = bytearray(b'\x00'*0x18)
-            header += struct.pack("<h", anim_id)
-            header += struct.pack("<h", key_count)
-            header += struct.pack("<h", time_per_key)
-            header += struct.pack("<B", segment_count)
-            header += struct.pack("<B", 1)
+        transform_type_by_name: dict[str, Tr7TransformType] = {
+            "location":             Tr7TransformType.LOCATION,
+            "rotation_quaternion":  Tr7TransformType.ROTATION,
+            "rotation_axis_angle":  Tr7TransformType.ROTATION,
+            "scale":                Tr7TransformType.SCALE
+        }
 
-            sec_off_pos = len(header)
-            header += struct.pack("<I", 0xDEADBEEF)
-            header += struct.pack("<B", transform_flags)
+        for bl_fcurve in bl_action.fcurves:
+            match = re.fullmatch(r'pose\.bones\["Bone_(\d+)"\]\.(\w+)', bl_fcurve.data_path)
+            if match is None or len(bl_fcurve.keyframe_points) == 0:
+                continue
 
-            track_flags = bytearray()
-            for kind, mask in [('rotation',0b001), ('scale',0b010), ('location',0b100)]:
-                if transform_flags & mask:
-                    track_flags += pack_3bit_flags(channel_flags[kind])
-            track_flags += b'\x00' * max(0, 64 - len(track_flags))
-            header += track_flags
+            bone_index = int(match.group(1))
+            if bone_index >= len(bl_armature_obj.pose.bones):
+                continue
 
-            pad = (-len(header)) % 4
-            if pad: header += b'\x00'*pad
-            aligned = len(header)
-            header[sec_off_pos:sec_off_pos+4] = struct.pack("<I", aligned - 32)
+            bl_bone = bl_armature_obj.pose.bones[bone_index]
+            transform_type_name = match.group(2)
+            axis = bl_fcurve.array_index
 
-            binary = bytearray(header)
+            transform_type = transform_type_by_name.get(transform_type_name)
+            if transform_type is None:
+                continue
 
-            # --- Track Data ---
-            masks = {'rotation':0b001,'scale':0b010,'location':0b100}
-            for bi, bn in enumerate(bone_names):
-                for kind in ('rotation','scale','location'):
-                    if not (transform_flags & masks[kind]): continue
-                    af = channel_flags[kind][bi]
-                    for ax in range(3):
-                        if not (af & (1<<ax)): continue
-                        channel = sorted(bone_tracks[bn][kind][ax])
-                        kf_cnt = len(channel)
+            tr_bone_anim = tr_bone_anims[bone_index]
+            tr_transform_anim = tr_bone_anim.transforms[transform_type]
+            if tr_transform_anim is None:
+                tr_transform_anim = Tr7TransformAnimation()
+                tr_bone_anim.transforms[transform_type] = tr_transform_anim
+                if transform_type == Tr7TransformType.ROTATION:
+                    tr_transform_anim.axis_tracks.append(None)      # Add fourth "axis"
 
-                        # Mode 0: full range
-                        if kf_cnt == key_count and all(frame_index_map[f] == i for i,(f,_) in enumerate(channel)):
-                            binary += struct.pack("<HH", 0, key_count)
-                            for _,v in channel:
-                                binary += struct.pack("<f", v)
-                            continue
+            tr_track = Tr7Track()
+            tr_transform_anim.axis_tracks[axis] = tr_track
+            for bl_keyframe in bl_fcurve.keyframe_points:
+                frame, value = bl_keyframe.co
+                if transform_type == Tr7TransformType.LOCATION:
+                    value = self.convert_bone_location_coord(bl_bone, axis, value)
 
-                        # Mode 1: constant
-                        if all(v == channel[0][1] for _,v in channel):
-                            binary += struct.pack("<HH", 1, 0)
-                            binary += struct.pack("<f", channel[0][1])
-                            continue
+                tr_track.keyframes.append(Tr7Keyframe(int(frame), value))
 
-                        # Mode 2: sparse deltas
-                        frames = [f for f,_ in channel]
-                        values = [v for _,v in channel]
-                        deltas = [frames[i] - frames[i-1] for i in range(1, kf_cnt)]
+            tr_track.keyframes.sort(key = lambda kf: kf.frame)
 
-                        binary += struct.pack("<HH", 2, kf_cnt)
-                        binary += struct.pack(f"<{len(deltas)}B", *deltas)
-                        pad2 = (-len(deltas)) % 4
-                        if pad2: binary += b'\x00'*pad2
+        self.convert_bone_rotations(bl_armature_obj, tr_bone_anims)
+        return tr_bone_anims
 
-                        prev = values[0]
-                        binary += struct.pack("<f", prev)
-                        for v in values[1:]:
-                            delta_v = v - prev
-                            binary += struct.pack("<f", delta_v)
-                            prev = v
+    def convert_bone_location_coord(self, bl_bone: bpy.types.PoseBone, axis: int, coord: float):
+        position = Vector((0.0, 0.0, 0.0))
+        position[axis] = coord
+        mat = Matrix.Translation(position)
+        if bl_bone.parent:
+            mat = bl_bone.bone.matrix_local @ bl_bone.parent.bone.matrix_local.inverted() @ mat
+        else:
+            mat = bl_bone.bone.matrix_local @ mat
 
-            # --- Section Header ---
-            def write_sect_header(data_len, m_type=2, sid=1):
-                return (struct.pack("<I", 0x54434553) + struct.pack("<I", data_len)
-                        + struct.pack("<I", m_type) + struct.pack("<I", 0)
-                        + struct.pack("<I", anim_id) + struct.pack("<I", 0xFFFFFFFF))
+        return mat.to_translation()[axis]
 
-            sect = write_sect_header(len(binary))
-            with open(self.filepath, 'wb') as f:
-                f.write(sect)
-                f.write(binary)
+    def convert_bone_rotations(self, bl_armature_obj: bpy.types.Object, tr_bone_anims: list[Tr7BoneAnimation]):
+        for bone_index, bl_bone in enumerate(bl_armature_obj.pose.bones):
+            if bone_index >= len(tr_bone_anims):
+                break
 
-            self.report({'INFO'}, f"Exported action '{active_action.name}' with {key_count} frames.")
-            return {'FINISHED'}
+            tr_rotation_anim = tr_bone_anims[bone_index].transforms[Tr7TransformType.ROTATION]
+            if tr_rotation_anim is None:
+                continue
 
-        except Exception as e:
-            self.report({'ERROR'}, f"Export failed: {e}")
-            return {'CANCELLED'}
+            for frame in tr_rotation_anim.get_keyframe_frames():
+                rotation = tr_rotation_anim.get_vector_at_frame(frame, 0)
+                match bl_bone.rotation_mode:
+                    case "QUATERNION":
+                        rotation = self.quat_to_axis_angle(rotation)
+
+                    case "AXIS_ANGLE":
+                        angle, rotation = rotation[0], Vector((rotation[1], rotation[2], rotation[3]))
+                        rotation.normalize()
+                        rotation *= angle
+
+                for axis in range(3):
+                    tr_axis_track = tr_rotation_anim.axis_tracks[axis]
+                    if tr_axis_track is None:
+                        tr_axis_track = Tr7Track()
+                        tr_rotation_anim.axis_tracks[axis] = tr_axis_track
+
+                    tr_axis_track.set_value_at_frame(frame, rotation[axis])
+
+            tr_rotation_anim.axis_tracks.pop(3)     # Remove fourth component now that everything is converted to three-component axis-angle
+
+    def quat_to_axis_angle(self, quat: Vector) -> Vector:
+        w, x, y, z = quat
+        if 1 - w < 0.00000001:
+            return Vector((0, 0, 0))
+
+        angle = math.acos(w) * 2
+        return Vector((x, y, z)) * (angle / math.sin(angle / 2))
 
     def invoke(self, context, event):
         self.filepath = bpy.path.ensure_ext(bpy.data.filepath, ".ani")
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
-        
+
 class TR7AE_PT_FileSectionsPanel(bpy.types.Panel):
     bl_label = "File Section Data"
     bl_idname = "TR7AE_PT_file_sections"
@@ -7211,7 +7304,7 @@ class TR7AE_PT_FileSectionsPanel(bpy.types.Panel):
         if sections.cloth_file_index != 0:
             layout.prop(sections, "cloth_file_index")
 
-        
+
 class TR7AE_PT_ClothPanel(bpy.types.Panel):
     bl_label = "Cloth"
     bl_idname = "TR7AE_PT_Cloth"
@@ -7641,7 +7734,7 @@ class TR7AE_OT_AddHSphere(bpy.types.Operator):
 
         self.report({'INFO'}, f"Created HSphere_{next_index}")
         return {'FINISHED'}
-    
+
 import bpy
 import bmesh
 from mathutils import Vector, Quaternion, Matrix
@@ -8050,7 +8143,7 @@ class TR7AE_PT_HCapsuleInfo(Panel):
 
             row = layout.row()
             row.label(text=f"Capsule {i} (Flags: {cap.flags})")
-            op = row.operator("tr7ae.toggle_capsule", text="", 
+            op = row.operator("tr7ae.toggle_capsule", text="",
                               icon='TRIA_DOWN' if expand[key] else 'TRIA_RIGHT', emboss=False)
             op.capsule_key = key
 
@@ -8163,8 +8256,8 @@ class TR7AE_PT_HMarkerMeshInfo(bpy.types.Panel):
     def poll(cls, context):
         obj = context.active_object
         return (
-            obj and 
-            obj.type == 'MESH' and 
+            obj and
+            obj.type == 'MESH' and
             "HMarker" in obj.name
         )
 
@@ -8249,7 +8342,7 @@ class TR7AE_OT_ToggleSphere(bpy.types.Operator):
         expand = TR7AE_PT_Tools._sphere_expand
         expand[self.sphere_key] = not expand.get(self.sphere_key, False)
         return {'FINISHED'}
-    
+
 class TR7AE_OT_ToggleHBox(bpy.types.Operator):
     bl_idname = "tr7ae.toggle_hbox"
     bl_label = "Toggle HBox Section"
@@ -8271,7 +8364,7 @@ class TR7AE_OT_ToggleMarker(bpy.types.Operator):
         expand = TR7AE_PT_Tools._marker_expand
         expand[self.marker_key] = not expand.get(self.marker_key, False)
         return {'FINISHED'}
-    
+
 class TR7AE_OT_SnapBoneToHMarker(bpy.types.Operator):
     bl_idname = "tr7ae.snap_bone_to_marker"
     bl_label = "Snap Skeleton to HMarker"
@@ -8322,7 +8415,7 @@ class TR7AE_OT_SnapBoneToHMarker(bpy.types.Operator):
 
         self.report({'INFO'}, f"{first_bone.name} aligned and armature parented to {hmarker.name}")
         return {'FINISHED'}
-    
+
 class TR7AE_OT_ToggleHInfoVisibility(bpy.types.Operator):
     bl_idname = "tr7ae.toggle_hinfo_visibility"
     bl_label = "Toggle HInfo Visibility"
