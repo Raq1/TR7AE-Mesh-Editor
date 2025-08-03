@@ -7181,6 +7181,7 @@ class TR7AE_OT_ExportAnimation(bpy.types.Operator):
 
         transform_type_by_name: dict[str, Tr7TransformType] = {
             "location":             Tr7TransformType.LOCATION,
+            "rotation_euler":       Tr7TransformType.ROTATION,
             "rotation_quaternion":  Tr7TransformType.ROTATION,
             "rotation_axis_angle":  Tr7TransformType.ROTATION,
             "scale":                Tr7TransformType.SCALE
@@ -7256,6 +7257,10 @@ class TR7AE_OT_ExportAnimation(bpy.types.Operator):
                         rotation.normalize()
                         rotation *= angle
 
+                    case _:
+                        euler = Euler((rotation[0], rotation[1], rotation[2]), bl_bone.rotation_mode)
+                        rotation = self.quat_to_axis_angle(euler.to_quaternion())
+
                 for axis in range(3):
                     tr_axis_track = tr_rotation_anim.axis_tracks[axis]
                     if tr_axis_track is None:
@@ -7266,7 +7271,7 @@ class TR7AE_OT_ExportAnimation(bpy.types.Operator):
 
             tr_rotation_anim.axis_tracks.pop(3)     # Remove fourth component now that everything is converted to three-component axis-angle
 
-    def quat_to_axis_angle(self, quat: Vector) -> Vector:
+    def quat_to_axis_angle(self, quat: Quaternion | Vector) -> Vector:
         w, x, y, z = quat
         if 1 - w < 0.00000001:
             return Vector((0, 0, 0))
