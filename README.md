@@ -7,6 +7,8 @@ In comparision to the Noesis plugin I previously made 3 years ago, this Blender 
 
 ## Features include
 
+- Tomb Raider Legend, Legend Next Gen, Anniversary, Underworld Models Import
+- Tomb Raider Legend, Anniversary Models Export
 - Animation import/export
 - HInfo import/export such as HBox, HSphere, HMarkers and HCapsules
 - HInfo live editing such as position, rotation and scale (where applicable) and export
@@ -33,7 +35,7 @@ The addon is currently capable of importing cloth physics data, however nothing 
 
 ## What's planned
 
-- Write vertices from face corners instead of actual vertex data. This will fix issues such as UV bleeding when exporting a model with removed double vertices
+- Write vertices from face corners instead of actual vertex data. This will greatly improve export times and fix issues such as UV bleeding when exporting a model with removed double vertices
 - Write Markups
 - Cloth export
 - Level Import/Export
