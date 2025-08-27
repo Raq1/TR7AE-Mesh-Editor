@@ -44,7 +44,7 @@ The addon is currently capable of importing cloth physics data, however nothing 
 ## Known limits
 
 - The limit of vertex count for one entire model is 21,845
-- If any material has the "Flat Shading" flag enabled, the limit of Virtual Segments (bone weighting entries) is 153
+- If any material has the "Flat Shading" flag enabled, the count of Virtual Segments (bone weighting entries) is limited to 153
 
 ## Credits
 
